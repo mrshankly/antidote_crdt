@@ -10,7 +10,7 @@
 -type pncounter_effect() :: integer().
 -type pncounter_value() :: integer().
 
-
+   
 -export_type([ crdt/0,
                update/0,
                effect/0,
