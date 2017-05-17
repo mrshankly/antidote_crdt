@@ -3,7 +3,7 @@
 
 -module(antidote_crdt_bigset_shardtree).
  
--export([init/0, init/1, insert/3, remove/2, get_shard/2, get_all/1, replace/3]).
+-export([init/0, init/1, insert/3, insert_two/5, remove/2, get_shard/2, get_all/1, replace/3]).
 -define(EMPTY_NODE, {node, 'empty'}).
 -type tree() :: ?EMPTY_NODE
                           | {node,{_K, _V, tree(), tree()}}.
@@ -54,6 +54,17 @@ insert(K, V, _Tree = {node, {NodeK, NodeV, Left, Right}}) ->
       	{node, {NodeK, NodeV, Left, insert(K, V, Right)}}
   	end.
 
+-spec insert_two(integer(), integer(), antidote_crdt_bigset_shard : shard(), antidote_crdt_bigset_shard : shard(), tree()) -> tree().
+insert_two(K1, K2, V1, V2, _Tree = {node, {NodeK, NodeV, ?EMPTY_NODE, ?EMPTY_NODE}}) ->
+	{node, {NodeK, NodeV, {node, {K1, V1, init(), init()}}, {node, {K2, V2, init(), init()}}}};
+insert_two(K1, K2, V1, V2, _Tree = {node, {NodeK, NodeV, Left, Right}}) ->
+	%% we can take K1 or K2 here
+  	if K1 < NodeK ->
+      	{node, {NodeK, NodeV, insert_two(K1, K2, V1, V2, Left), Right}}
+   	; K1  >= NodeK ->
+      	{node, {NodeK, NodeV, Left, insert_two(K1, K2, V1, V2, Right)}}
+  	end.
+
 -spec remove(integer(), tree()) -> tree().
 remove(_, _Tree = {node, {_, _, ?EMPTY_NODE, ?EMPTY_NODE}}) ->
  	?EMPTY_NODE;
@@ -67,11 +78,11 @@ remove(K, _Tree = {node, {NodeK, NodeV, Left, Right}}) ->
 %% @doc Replace a key in the tree
 %%
 -spec replace(integer(), antidote_crdt_bigset_shard : shard(), tree()) -> tree().
-replace(_K, V, _Tree = {node ,{K, _V, ?EMPTY_NODE, ?EMPTY_NODE}}) ->
- 	{node, {K, V, ?EMPTY_NODE, ?EMPTY_NODE}};
 replace(K, V, _Tree = {node, {NodeK, NodeV, Left, Right}}) ->
   	if K < NodeK ->
       	{node, {NodeK, NodeV, replace(K, V, Left), Right}}
-   	; K  >= NodeK ->
+   	; K  > NodeK ->
       	{node, {NodeK, NodeV, Left, replace(K, V, Right)}}
+	; K == NodeK ->
+		{node, {NodeK, V, ?EMPTY_NODE, ?EMPTY_NODE}}  
   	end.

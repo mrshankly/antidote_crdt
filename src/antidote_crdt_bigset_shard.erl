@@ -142,10 +142,10 @@ merge_content([{{H_Elem1, Elem1}, Tokens1}| ContentRest1]=Content1, [{{H_Elem2, 
 	end.
 		
 -spec split(shard(), integer()) -> {shard(), shard()}.
-split({Key, Siblings, Content}, Hash_Exponent) ->
+split({Key, Siblings, Content}, Hash_Range) ->
 	if 
 		Siblings == [] ->
-			KeyVal = (antidote_crdt_bigset : hash_range(Hash_Exponent)) div 4;
+			KeyVal = Hash_Range div 4;
 		true ->
 			KeyVal = abs(Key - lists:last(Siblings)) div 4
 	end,

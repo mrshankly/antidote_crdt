@@ -60,8 +60,7 @@
           from_binary/1,
           is_operation/1,
           require_state_downstream/1,
-          is_bottom/1,
-		  hash_range/1
+          is_bottom/1
         ]).
 
 -behaviour(antidote_crdt).
@@ -92,16 +91,14 @@
 
 -spec new() -> bigset().
 new() ->
-	{16, 30, antidote_crdt_bigset_shardtree : init(antidote_crdt_bigset_shard : new(hash_range(16) div 2, []))}.
+	Hash_Range = exponent_of_2(32),
+	{Hash_Range, 2000, antidote_crdt_bigset_shardtree : init(antidote_crdt_bigset_shard : new(Hash_Range div 2, []))}.
 
 %% Hash_Exponent bust be between 0 and 32
 -spec new(integer(), integer()) -> bigset().
 new(Hash_Exponent, Max_Count) ->
-	{Hash_Exponent, Max_Count, antidote_crdt_bigset_shardtree : init(antidote_crdt_bigset_shard : new(hash_range(Hash_Exponent) div 2, []))}.
-
--spec hash_range(integer()) -> integer().
-hash_range(Hash_Exponent) -> 
-	exponent_of_2(Hash_Exponent).
+	Hash_Range = exponent_of_2(Hash_Exponent),
+	{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : init(antidote_crdt_bigset_shard : new(Hash_Range div 2, []))}.
 
 -spec exponent_of_2(integer()) -> integer().
 exponent_of_2(0) -> 
@@ -116,7 +113,7 @@ exponent_of_2(N) ->
 
 %% @doc return all existing elements in the bigset
 -spec value(bigset()) -> [elem()].
-value({_Hash_Exponent, _Max_Count, Tree}=_BigSet) ->
+value({_Hash_Range, _Max_Count, Tree}=_BigSet) ->
 	Shards = antidote_crdt_bigset_shardtree : get_all(Tree),
     value_helper(Shards).
 	
@@ -131,14 +128,14 @@ value_helper([Shard|Rest]) ->
 
 %% @doc return true if the bigset contains the element
 -spec contains(elem(), bigset()) -> boolean().
-contains(Elem, {Hash_Exponent, _Max_Count, Tree} = _BigSet) ->
-	H_Elem = erlang:phash2(Elem, hash_range(Hash_Exponent)),
+contains(Elem, {Hash_Range, _Max_Count, Tree} = _BigSet) ->
+	H_Elem = erlang:phash2(Elem, Hash_Range),
 	{ok, Shard} = antidote_crdt_bigset_shardtree : get_shard(H_Elem, Tree),
 	antidote_crdt_bigset_shard : contains(H_Elem, Elem, Shard). 
 
 %% @doc return all existing elements in the `bigset()'.
 -spec get_tokens(elem_hash(), elem(), bigset()) -> [token()].
-get_tokens(H_Elem, Elem, {_Hash_Exponent, _Max_Count, Tree} = _BigSet) ->
+get_tokens(H_Elem, Elem, {_Hash_Range, _Max_Count, Tree} = _BigSet) ->
 	{ok, Shard} = antidote_crdt_bigset_shardtree : get_shard(H_Elem, Tree),
 	antidote_crdt_bigset_shard : get_tokens(H_Elem, Elem, Shard). 
 
@@ -211,8 +208,8 @@ downstream({reset, {}}, BigSet) ->
 - spec create_downstreams(any(), [elem()], bigset(), downstream_op())->downstream_op().
 create_downstreams(_CreateDownstream, [], _BigSet, DownstreamOps) ->
     lists : keysort(1, DownstreamOps);
-create_downstreams(CreateDownstream, [Elem|ElemsRest], {Hash_Exponent, _Max_Count, _Tree} = BigSet, DownstreamOps) ->
-	H_Elem = erlang : phash2(Elem, hash_range(Hash_Exponent)),
+create_downstreams(CreateDownstream, [Elem|ElemsRest], {Hash_Range, _Max_Count, _Tree} = BigSet, DownstreamOps) ->
+	H_Elem = erlang : phash2(Elem, Hash_Range),
     Tokens = get_tokens(H_Elem, Elem, BigSet),
 	DownstreamOp = CreateDownstream(H_Elem, Elem, Tokens),
 	create_downstreams(CreateDownstream, ElemsRest, BigSet, [DownstreamOp|DownstreamOps]).
@@ -227,11 +224,11 @@ update(DownstreamOp, BigSet) ->
 -spec apply_downstreams(downstream_op(), {integer(), integer()}, downstream_op(), bigset()) -> bigset().
 apply_downstreams([], _, [], BigSet) ->
     BigSet;
-apply_downstreams([{H_Elem1, _Elem1, _ToAdd1, _ToRemove1}|_OpsRest1]=Ops1, _Interval, [], {_Hash_Exponent, _Max_Count, Tree} = BigSet) ->
+apply_downstreams([{H_Elem1, _Elem1, _ToAdd1, _ToRemove1}|_OpsRest1]=Ops1, _Interval, [], {_Hash_Range, _Max_Count, Tree} = BigSet) ->
 	{ok, Shard} = antidote_crdt_bigset_shardtree : get_shard(H_Elem1, Tree),
 	{ok, Shard2} = antidote_crdt_bigset_shard : update_shard(lists :reverse(Ops1), Shard),
 	pick_action(BigSet, Shard2);
-apply_downstreams([], _Interval, [{H_Elem2, Elem2, ToAdd2, ToRemove2}|OpsRest2] = Ops2, {_Hash_Exponent, _Max_Count, Tree} = BigSet) ->
+apply_downstreams([], _Interval, [{H_Elem2, Elem2, ToAdd2, ToRemove2}|OpsRest2] = Ops2, {_Hash_Range, _Max_Count, Tree} = BigSet) ->
 	{ok, {Key, Siblings, _Content}=Shard} = antidote_crdt_bigset_shardtree : get_shard(H_Elem2, Tree),
 	if
 		Siblings == [] ->
@@ -243,7 +240,7 @@ apply_downstreams([], _Interval, [{H_Elem2, Elem2, ToAdd2, ToRemove2}|OpsRest2] 
 			apply_downstreams([{H_Elem2, Elem2, ToAdd2, ToRemove2}], {Key-HalfInterval, Key+HalfInterval}, OpsRest2, BigSet)
 	end;	
 apply_downstreams([{H_Elem1, _Elem1, _ToAdd1, _ToRemove1}|_OpsRest1]=Ops1, {Low, Up} = Interval, [{H_Elem2, Elem2, ToAdd2, ToRemove2}|OpsRest2], 
-				  		{_Hash_Exponent, _Max_Count, Tree} = BigSet) ->
+				  		{_Hash_Range, _Max_Count, Tree} = BigSet) ->
 	if
 		%% Elem2 goes into the same shard than Elem1, so collect that operation in Ops1
 		H_Elem2 < Up andalso Low =< H_Elem2 ->
@@ -253,11 +250,11 @@ apply_downstreams([{H_Elem1, _Elem1, _ToAdd1, _ToRemove1}|_OpsRest1]=Ops1, {Low,
 		true ->
 			{ok, Shard} = antidote_crdt_bigset_shardtree : get_shard(H_Elem1, Tree),
 			{ok, Shard2} = antidote_crdt_bigset_shard : update_shard(lists: reverse(Ops1), Shard),
-			{Hash_Exponent, _Max_Count, Tree2} = BigSet2 = pick_action(BigSet, Shard2),
+			{Hash_Range, _Max_Count, Tree2} = BigSet2 = pick_action(BigSet, Shard2),
 			{ok, {Key, Siblings, _Content}} = antidote_crdt_bigset_shardtree : get_shard(H_Elem2, Tree2),
 			if
 				Siblings == [] ->
-					HalfInterval = hash_range(Hash_Exponent) div 2;
+					HalfInterval = Hash_Range div 2;
 				true ->
 					HalfInterval = abs(lists:last(Siblings)-Key) div 2
 			end,
@@ -265,7 +262,7 @@ apply_downstreams([{H_Elem1, _Elem1, _ToAdd1, _ToRemove1}|_OpsRest1]=Ops1, {Low,
 	end.
 
 -spec pick_action(bigset(), antidote_crdt_bigset_shard : shard()) -> bigset().
-pick_action({Hash_Exponent, Max_Count, Tree} = _BigSet, {Key, Siblings, Content} = Shard) ->
+pick_action({Hash_Range, Max_Count, Tree} = _BigSet, {Key, Siblings, Content} = Shard) ->
 	Size = antidote_crdt_bigset_shard : size(Shard),
 	if 
 		Size < Max_Count div 4 andalso Siblings /= [] -> 
@@ -274,21 +271,31 @@ pick_action({Hash_Exponent, Max_Count, Tree} = _BigSet, {Key, Siblings, Content}
 			Key2 = lists:last(Siblings2),
 			if
 				Key == Key2 ->
-					NewKey = (Key + SiblingKey div 2),
+					NewKey = (Key + SiblingKey) div 2,
 					NewShard = {NewKey, lists : droplast(Siblings), antidote_crdt_bigset_shard : merge_content(Content, SiblingContent)},
-					Tree2 = antidote_crdt_bigset_shardtree : remove(Key, Tree),
-					Tree3 = antidote_crdt_bigset_shardtree : remove(SiblingKey, Tree2),
-					{Hash_Exponent, Max_Count, antidote_crdt_bigset_shardtree : replace(NewKey, NewShard, Tree3)};
+					{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : replace(NewKey, NewShard, Tree)};
 				true ->
-					{Hash_Exponent, Max_Count, antidote_crdt_bigset_shardtree : replace(Key, Shard, Tree)}
+					{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : replace(Key, Shard, Tree)}
 			end;				
-		Size > Max_Count -> 
-			{{Upper_Key, _Upper_Siblings, _Upper_Content} = Upper_Shard,{Lower_Key, _Lower_Siblings, _Lower_Content} = Lower_Shard} 
-				= antidote_crdt_bigset_shard : split(Shard, Hash_Exponent),
-			Tree2 = antidote_crdt_bigset_shardtree : insert(Lower_Key, Lower_Shard, Tree),
-			{Hash_Exponent, Max_Count, antidote_crdt_bigset_shardtree : insert(Upper_Key, Upper_Shard, Tree2)};
+		Size > Max_Count ->
+			if 
+				Siblings == [] ->
+					{{Upper_Key, _Upper_Siblings, _Upper_Content} = Upper_Shard,{Lower_Key, _Lower_Siblings, _Lower_Content} = Lower_Shard} 
+						= antidote_crdt_bigset_shard : split(Shard, Hash_Range),
+					{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : insert_two(Lower_Key, Upper_Key, Lower_Shard, Upper_Shard, Tree)};
+				true ->
+					Temp = exponent_of_2(lists: size(Siblings)),
+					if 
+						Temp < Hash_Range -> 
+							{{Upper_Key, _Upper_Siblings, _Upper_Content} = Upper_Shard,{Lower_Key, _Lower_Siblings, _Lower_Content} = Lower_Shard} 
+								= antidote_crdt_bigset_shard : split(Shard, Hash_Range),
+							{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : insert_two(Lower_Key, Upper_Key, Lower_Shard, Upper_Shard, Tree)};
+						true ->
+							{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : replace(Key, Shard, Tree)}
+					end
+			end;
 		true -> 
-			{Hash_Exponent, Max_Count, antidote_crdt_bigset_shardtree : replace(Key, Shard, Tree)}		
+			{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : replace(Key, Shard, Tree)}		
 	end.
 
 
