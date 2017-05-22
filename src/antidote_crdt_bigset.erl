@@ -50,10 +50,10 @@
 
 %% Callbacks
 -export([ new/0,
-		  new/2,
+	  new/2,
           value/1,
           downstream/2,
-		  contains/2,
+	  contains/2,
           update/2,
           equal/2,
           to_binary/1,
@@ -67,7 +67,7 @@
 
 -export_type([bigset/0, binary_bigset/0, bigset_op/0, elem/0, token/0, elem_hash/0]).
  
--type bigset() :: {integer(), integer(), antidote_crdt_bigset_shardtree : tree()}.
+-type bigset() :: {integer(), integer(), antidote_crdt_bigset_keytree : tree(), atom()}.
 
 -type binary_bigset() :: binary(). %% A binary that from_binary/1 will operate on.
 
@@ -91,14 +91,42 @@
 
 -spec new() -> bigset().
 new() ->
-	Hash_Range = exponent_of_2(32),
-	{Hash_Range, 2000, antidote_crdt_bigset_shardtree : init(antidote_crdt_bigset_shard : new(Hash_Range div 2, []))}.
-
+	new(32, 1000).
+	
 %% Hash_Exponent bust be between 0 and 32
 -spec new(integer(), integer()) -> bigset().
 new(Hash_Exponent, Max_Count) ->
 	Hash_Range = exponent_of_2(Hash_Exponent),
-	{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : init(antidote_crdt_bigset_shard : new(Hash_Range div 2, []))}.
+	%%Atom = erlang:binary_to_atom(crypto:strong_rand_bytes(20), latin1),
+	Table = ets:new(placeholder, [set, protected, {keypos,1}, {heir,none}, {write_concurrency,true}, {read_concurrency,true}]),
+	Key = Hash_Range div 2,
+	Value = unique(),
+	ets:insert(Table, {{Key, Value}, antidote_crdt_bigset_shard : new(Key, [])}),
+	Temp = ets:member(Table, "Keyversions"),
+	if 
+		Temp == true ->
+			[{_Int, OldMap}] = ets:lookup(Table, "Keyversions"),
+			Temp2 = maps:is_key(Key, OldMap),
+			if 
+				Temp2 == true ->
+					{ok, ValueList} = maps: find(Key, OldMap),
+					[Head | Rest] = ValueList2 = lists: append(ValueList, [Value]),
+					if
+						%% if there are more than 10 versions of a shard, the oldest is deleted
+						length(ValueList2) > 10 ->
+							ets:delete(Table, {Key, Head}),
+							Map = maps : put(Key, Rest, OldMap);
+						true ->
+							Map = maps : put(Key, ValueList2, OldMap)
+					end;
+				true ->
+					Map = maps : put(Key, [Value], OldMap)
+			end;
+		true ->
+			Map = maps:put(Key, [Value], maps: new())
+	end,
+	ets:insert(Table, {"Keyversions", Map}),
+	{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : init(Key, Value), Table}.
 
 -spec exponent_of_2(integer()) -> integer().
 exponent_of_2(0) -> 
@@ -113,30 +141,34 @@ exponent_of_2(N) ->
 
 %% @doc return all existing elements in the bigset
 -spec value(bigset()) -> [elem()].
-value({_Hash_Range, _Max_Count, Tree}=_BigSet) ->
-	Shards = antidote_crdt_bigset_shardtree : get_all(Tree),
-    value_helper(Shards).
+value({_Hash_Range, _Max_Count, Tree, Table}=_BigSet) ->
+	TableKeys = antidote_crdt_bigset_keytree : get_all(Tree),
+    value_helper(TableKeys, Table).
 	
--spec value_helper([antidote_crdt_bigset_shard : shard()]) -> [elem()].
-value_helper([Shard|Rest]) ->
+-spec value_helper([integer()], atom()) -> [elem()].
+value_helper([Key|Rest], Table) ->
 	case Rest of
         [] ->
+			[{_Int, Shard}] = ets:lookup(Table, Key),
             antidote_crdt_bigset_shard : value(Shard);
         _ ->
-            antidote_crdt_bigset_shard : value(Shard) ++ value_helper(Rest)
+			[{_Int, Shard}] = ets:lookup(Table, Key),
+            antidote_crdt_bigset_shard : value(Shard) ++ value_helper(Rest, Table)
 	end.
 
 %% @doc return true if the bigset contains the element
 -spec contains(elem(), bigset()) -> boolean().
-contains(Elem, {Hash_Range, _Max_Count, Tree} = _BigSet) ->
+contains(Elem, {Hash_Range, _Max_Count, Tree, Table} = _BigSet) ->
 	H_Elem = erlang:phash2(Elem, Hash_Range),
-	{ok, Shard} = antidote_crdt_bigset_shardtree : get_shard(H_Elem, Tree),
+	{ok, TableKey} = antidote_crdt_bigset_keytree : get_key(H_Elem, Tree),
+	[{_Int, Shard}] = ets:lookup(Table, TableKey),
 	antidote_crdt_bigset_shard : contains(H_Elem, Elem, Shard). 
 
 %% @doc return all existing elements in the `bigset()'.
 -spec get_tokens(elem_hash(), elem(), bigset()) -> [token()].
-get_tokens(H_Elem, Elem, {_Hash_Range, _Max_Count, Tree} = _BigSet) ->
-	{ok, Shard} = antidote_crdt_bigset_shardtree : get_shard(H_Elem, Tree),
+get_tokens(H_Elem, Elem, {_Hash_Range, _Max_Count, Tree, Table} = _BigSet) ->
+	{ok, TableKey} = antidote_crdt_bigset_keytree : get_key(H_Elem, Tree),
+	[{_Int, Shard}] = ets:lookup(Table, TableKey),
 	antidote_crdt_bigset_shard : get_tokens(H_Elem, Elem, Shard). 
 
 %% @doc compares two bigsets, yields "true" if they contain the same elements
@@ -208,7 +240,7 @@ downstream({reset, {}}, BigSet) ->
 - spec create_downstreams(any(), [elem()], bigset(), downstream_op())->downstream_op().
 create_downstreams(_CreateDownstream, [], _BigSet, DownstreamOps) ->
     lists : keysort(1, DownstreamOps);
-create_downstreams(CreateDownstream, [Elem|ElemsRest], {Hash_Range, _Max_Count, _Tree} = BigSet, DownstreamOps) ->
+create_downstreams(CreateDownstream, [Elem|ElemsRest], {Hash_Range, _Max_Count, _Tree, _Table} = BigSet, DownstreamOps) ->
 	H_Elem = erlang : phash2(Elem, Hash_Range),
     Tokens = get_tokens(H_Elem, Elem, BigSet),
 	DownstreamOp = CreateDownstream(H_Elem, Elem, Tokens),
@@ -217,87 +249,89 @@ create_downstreams(CreateDownstream, [Elem|ElemsRest], {Hash_Range, _Max_Count, 
 %% @doc apply downstream operations and update a bigset.
 -spec update(downstream_op(), bigset()) -> {ok, bigset()}.
 update(DownstreamOp, BigSet) ->
-    {ok, apply_downstreams([], {0,0}, DownstreamOp, BigSet)}.
+    {ok, apply_downstreams(DownstreamOp, BigSet)}.
 
 %% @private apply a list of downstream ops to a given bigset
 %% first downstream_op() collects elements that go into the same shard, second contains remaining elements
--spec apply_downstreams(downstream_op(), {integer(), integer()}, downstream_op(), bigset()) -> bigset().
-apply_downstreams([], _, [], BigSet) ->
+-spec apply_downstreams(downstream_op(), bigset()) -> bigset().
+apply_downstreams([], BigSet) ->
     BigSet;
-apply_downstreams([{H_Elem1, _Elem1, _ToAdd1, _ToRemove1}|_OpsRest1]=Ops1, _Interval, [], {_Hash_Range, _Max_Count, Tree} = BigSet) ->
-	{ok, Shard} = antidote_crdt_bigset_shardtree : get_shard(H_Elem1, Tree),
-	{ok, Shard2} = antidote_crdt_bigset_shard : update_shard(lists :reverse(Ops1), Shard),
-	pick_action(BigSet, Shard2);
-apply_downstreams([], _Interval, [{H_Elem2, Elem2, ToAdd2, ToRemove2}|OpsRest2] = Ops2, {_Hash_Range, _Max_Count, Tree} = BigSet) ->
-	{ok, {Key, Siblings, _Content}=Shard} = antidote_crdt_bigset_shardtree : get_shard(H_Elem2, Tree),
-	if
-		Siblings == [] ->
-			%% only one shard, where everything belongs in
-			{ok, Shard2} = antidote_crdt_bigset_shard : update_shard(Ops2, Shard),
-			pick_action(BigSet, Shard2);
-		true ->
-			HalfInterval = abs(lists:last(Siblings)-Key) div 2,
-			apply_downstreams([{H_Elem2, Elem2, ToAdd2, ToRemove2}], {Key-HalfInterval, Key+HalfInterval}, OpsRest2, BigSet)
-	end;	
-apply_downstreams([{H_Elem1, _Elem1, _ToAdd1, _ToRemove1}|_OpsRest1]=Ops1, {Low, Up} = Interval, [{H_Elem2, Elem2, ToAdd2, ToRemove2}|OpsRest2], 
-				  		{_Hash_Range, _Max_Count, Tree} = BigSet) ->
-	if
-		%% Elem2 goes into the same shard than Elem1, so collect that operation in Ops1
-		H_Elem2 < Up andalso Low =< H_Elem2 ->
-			apply_downstreams([{H_Elem2, Elem2, ToAdd2, ToRemove2}|Ops1], Interval, OpsRest2, BigSet);
-		%% Elem2 goes into another shard, so execute all operations from Ops1 and start to fill that list again
-		%% Update Low and Up with the bounds of the shard that Elem2 belongs into
-		true ->
-			{ok, Shard} = antidote_crdt_bigset_shardtree : get_shard(H_Elem1, Tree),
-			{ok, Shard2} = antidote_crdt_bigset_shard : update_shard(lists: reverse(Ops1), Shard),
-			{Hash_Range, _Max_Count, Tree2} = BigSet2 = pick_action(BigSet, Shard2),
-			{ok, {Key, Siblings, _Content}} = antidote_crdt_bigset_shardtree : get_shard(H_Elem2, Tree2),
-			if
-				Siblings == [] ->
-					HalfInterval = Hash_Range div 2;
-				true ->
-					HalfInterval = abs(lists:last(Siblings)-Key) div 2
-			end,
-			apply_downstreams([{H_Elem2, Elem2, ToAdd2, ToRemove2}], {Key-HalfInterval, Key+HalfInterval}, OpsRest2, BigSet2)
-	end.
+apply_downstreams([{H_Elem, _Elem, _ToAdd, _ToRemove} = Op|OpsRest], {_Hash_Range, _Max_Count, Tree, Table} = BigSet) ->
+	{ok, TableKey} = antidote_crdt_bigset_keytree : get_key(H_Elem, Tree),
+	[{_Int, Shard}] = ets:lookup(Table, TableKey),
+	{ok, Shard2} = antidote_crdt_bigset_shard : update_shard(Op, Shard),
+	BigSet2 = pick_action(BigSet, Shard2),
+	apply_downstreams(OpsRest, BigSet2).
 
 -spec pick_action(bigset(), antidote_crdt_bigset_shard : shard()) -> bigset().
-pick_action({Hash_Range, Max_Count, Tree} = _BigSet, {Key, Siblings, Content} = Shard) ->
+pick_action({Hash_Range, Max_Count, Tree, Table} = _BigSet, {Key, Siblings, Content} = Shard) ->
 	Size = antidote_crdt_bigset_shard : size(Shard),
 	if 
 		Size < Max_Count div 4 andalso Siblings /= [] -> 
 			SiblingKey = lists:last(Siblings),
-			{ok, {_SiblingKey, Siblings2, SiblingContent}} = antidote_crdt_bigset_shardtree : get_shard(SiblingKey, Tree),
+			{ok, TableKey} = antidote_crdt_bigset_keytree : get_key(SiblingKey, Tree),
+			[{_Int, {_SiblingKey, Siblings2, SiblingContent}}] = ets:lookup(Table, TableKey),
+			SiblingSize = length(SiblingContent),
 			Key2 = lists:last(Siblings2),
 			if
-				Key == Key2 ->
+				Key == Key2 andalso SiblingSize < (3 * Max_Count div 2) ->
 					NewKey = (Key + SiblingKey) div 2,
 					NewShard = {NewKey, lists : droplast(Siblings), antidote_crdt_bigset_shard : merge_content(Content, SiblingContent)},
-					{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : replace(NewKey, NewShard, Tree)};
+					Value = unique(),
+					ets:insert(Table, {{NewKey, Value}, NewShard}),
+					garbage_collect_table(Table, {NewKey, Value}),
+					{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : replace(NewKey, Value, Tree), Table};
 				true ->
-					{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : replace(Key, Shard, Tree)}
+					Value = unique(),
+					ets:insert(Table, {{Key, Value}, Shard}),
+					garbage_collect_table(Table, {Key, Value}),
+					{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : replace(Key, Value, Tree), Table}	
 			end;				
 		Size > Max_Count ->
-			if 
-				Siblings == [] ->
-					{{Upper_Key, _Upper_Siblings, _Upper_Content} = Upper_Shard,{Lower_Key, _Lower_Siblings, _Lower_Content} = Lower_Shard} 
-						= antidote_crdt_bigset_shard : split(Shard, Hash_Range),
-					{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : insert_two(Lower_Key, Upper_Key, Lower_Shard, Upper_Shard, Tree)};
-				true ->
-					Temp = exponent_of_2(lists: size(Siblings)),
-					if 
-						Temp < Hash_Range -> 
-							{{Upper_Key, _Upper_Siblings, _Upper_Content} = Upper_Shard,{Lower_Key, _Lower_Siblings, _Lower_Content} = Lower_Shard} 
-								= antidote_crdt_bigset_shard : split(Shard, Hash_Range),
-							{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : insert_two(Lower_Key, Upper_Key, Lower_Shard, Upper_Shard, Tree)};
-						true ->
-							{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : replace(Key, Shard, Tree)}
-					end
+				Temp = exponent_of_2(length(Siblings)),
+				if 
+					Temp < Hash_Range -> 
+						{{Upper_Key, _Upper_Siblings, _Upper_Content} = Upper_Shard,{Lower_Key, _Lower_Siblings, _Lower_Content} = Lower_Shard} 
+							= antidote_crdt_bigset_shard : split(Shard, Hash_Range),
+						Value1 = unique(),
+						Value2 = unique(),
+						ets:insert(Table, [{{Lower_Key, Value1}, Lower_Shard},{{Upper_Key, Value2}, Upper_Shard}]),
+						garbage_collect_table(Table, {Lower_Key, Value1}),
+						garbage_collect_table(Table, {Upper_Key, Value2}),
+						{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : insert_two(Lower_Key, Upper_Key, Value1, Value2, Tree), Table};
+					true ->
+						Value = unique(),
+						ets:insert(Table, {{Key, Value}, Shard}),
+						garbage_collect_table(Table, {Key, Value}),
+						{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : replace(Key, Value, Tree), Table}
 			end;
 		true -> 
-			{Hash_Range, Max_Count, antidote_crdt_bigset_shardtree : replace(Key, Shard, Tree)}		
+			Value = unique(),
+			ets:insert(Table, {{Key, Value}, Shard}),
+			garbage_collect_table(Table, {Key, Value}),
+			{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : replace(Key, Value, Tree), Table}	
 	end.
 
+garbage_collect_table(Table, {Key, Value}) ->
+	[{_Int, Map}] = ets:lookup(Table, "Keyversions"),
+	Temp = maps:is_key(Key, Map),
+	if 
+		Temp == true ->
+			{ok, ValueList} = maps: find(Key, Map),
+			[Head | Rest] = ValueList2 = lists: append(ValueList, [Value]),
+			if
+				%% if there are more than 10 versions of a shard, the oldest is deleted
+				length(ValueList2) > 10 ->
+					ets:delete(Table, {Key, Head}),
+					Map2 = maps : put(Key, Rest, Map);
+				true ->
+					Map2 = maps : put(Key, ValueList2, Map)	
+			end,			
+			ets:insert(Table, {"Keyversions", Map2});
+		true ->
+			Map2 = maps : put(Key, [Value], Map),
+			ets : insert(Table, {"Keyversions", Map2})
+	end.
 
 %% @doc The following operation verifies
 %%      that Operation is supported by this particular CRDT.

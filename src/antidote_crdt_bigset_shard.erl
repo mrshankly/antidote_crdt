@@ -2,30 +2,20 @@
 %% @doc @todo Add description to antidote_crdt_bigset_shard.
 
 -module(antidote_crdt_bigset_shard).  
- 
--include("antidote_crdt.hrl").
   
 %% Callbacks
 -export([value/1,
 		 contains/3,
 		 get_tokens/3,
 		 new/2,
-		 to_binary/1,
-		 from_binary/1,
 		 update_shard/2,
 		 size/1,
-		 is_bottom/1,
 		 merge_content/2,
 		 split/2
         ]).
 
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
--endif.
-
 -export_type([shard/0]).
 -type shard() ::  {key(), siblings(), orddict:orddict({elem_hash(), elem()}, tokens())}.
--type binary_shard() :: binary(). %% A binary that from_binary/1 will operate on.
 -type key() :: integer().
 -type siblings() :: [key()].
 -type content() :: [{{elem_hash(), elem()}, tokens()}].
@@ -69,48 +59,24 @@ value_helper([]) ->
 value_helper([{_H_Elem, Elem}|Rest]) ->
     [Elem]++value_helper(Rest). 
 
--include("riak_dt_tags.hrl").
--define(TAG, ?DT_BIGSET_SHARD_TAG).
--define(V1_VERS, 1).
-
--spec to_binary(shard()) -> binary_shard().
-to_binary(Shard) ->
-    %% @TODO something smarter
-    <<?TAG:8/integer, ?V1_VERS:8/integer, (term_to_binary(Shard))/binary>>.
-
--spec from_binary(<<_:16,_:_*8>>) -> {'ok', shard()}.
-from_binary(<<?TAG:8/integer, ?V1_VERS:8/integer, Bin/binary>>) ->
-    %% @TODO something smarter
-    {ok, binary_to_term(Bin)}.
-
 %% @doc apply downstream operations and update a shard().
--spec update_shard([{elem_hash(), elem(), tokens(), tokens()}], shard()) -> {ok, shard()}.
-update_shard([], Shard) ->
-    {ok, Shard};
-update_shard(Ops, {Key, Siblings, Content}) ->
-  	{ok, {Key, Siblings, update_shard_helper(Ops, Content)}}.
+-spec update_shard({elem_hash(), elem(), tokens(), tokens()}, shard()) -> {ok, shard()}.
+update_shard(Op, {Key, Siblings, Content}) ->
+  	{ok, {Key, Siblings, update_shard_helper(Op, Content)}}.
 
--spec update_shard_helper([{elem_hash(), elem(), tokens(), tokens()}], content()) -> content().
-update_shard_helper([], Content) ->
-		Content;
-update_shard_helper(Ops, []) ->
-    lists:foldl(
-        fun({H_Elem, Elem, ToAdd, ToRemove}, Content) ->
-            Content ++ apply_downstream(H_Elem, Elem, [], ToAdd, ToRemove)
-        end,
-        [],
-        Ops
-    );
-update_shard_helper([{H_Elem1, Elem1, ToAdd, ToRemove}|OpsRest]=Ops,  [{{H_Elem2, Elem2}, CurrentTokens}|ContentRest]=Content) ->
+-spec update_shard_helper({elem_hash(), elem(), tokens(), tokens()}, content()) -> content().
+update_shard_helper({H_Elem, Elem, ToAdd, ToRemove}=_Op, []) ->
+    apply_downstream(H_Elem, Elem, [], ToAdd, ToRemove);
+update_shard_helper({H_Elem1, Elem1, ToAdd, ToRemove}=Op,  [{{H_Elem2, Elem2}, CurrentTokens}|ContentRest]=Content) ->
     if
         {H_Elem1, Elem1} == {H_Elem2, Elem2} ->
-            apply_downstream(H_Elem1, Elem1, CurrentTokens, ToAdd, ToRemove) ++ update_shard_helper(OpsRest, ContentRest);
+            apply_downstream(H_Elem1, Elem1, CurrentTokens, ToAdd, ToRemove) ++  ContentRest;
 		%% we sorted the element list first and after that performed a keysort on H_Elem, where the keysort is stable,
 		%% so for equal H_Elem1 and 2, looking at Elem1 and 2 works
 		(H_Elem1 == H_Elem2 andalso Elem1 > Elem2) orelse (H_Elem1 > H_Elem2) ->
-            [{{H_Elem2, Elem2}, CurrentTokens} | update_shard_helper(Ops, ContentRest)];
+            [{{H_Elem2, Elem2}, CurrentTokens} | update_shard_helper(Op, ContentRest)];
         true ->
-            apply_downstream(H_Elem1, Elem1, [], ToAdd, ToRemove) ++ update_shard_helper(OpsRest, Content)
+            apply_downstream(H_Elem1, Elem1, [], ToAdd, ToRemove) ++ Content
     end.
 
 %% @private create an orddict entry from a downstream op
@@ -167,15 +133,4 @@ lower_half(Key, [{{H_Elem, Elem}, Tokens}| ContentRest]=_Content) ->
 		true -> 
 			[{{H_Elem, Elem}, Tokens}] ++ lower_half(Key, ContentRest)
 	end.
-		
 
-is_bottom({_Key, _Siblings, Content}) -> 
-	{_Key, _Siblings, NewContent} = new(0, []),
-	Content == NewContent.
-
-%% ===================================================================
-%% EUnit tests
-%% ===================================================================
--ifdef(TEST).
-
--endif.
