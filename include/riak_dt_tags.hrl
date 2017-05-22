@@ -31,7 +31,6 @@
 -define(DT_ORSET_TAG, 76).
 -define(DT_ORSWOT_TAG, 75).
 -define(DT_BIGSET_TAG, 90).
--define(DT_BIGSET_SHARD_TAG, 91).
 
 %% Maps
 -define(DT_MAP_TAG, 77).

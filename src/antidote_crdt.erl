@@ -35,7 +35,8 @@
                 antidote_crdt_gmap,
                 antidote_crdt_set_rw,
                 antidote_crdt_integer,
-		antidote_crdt_bigset,
+				antidote_crdt_bigset,
+				antidote_crdt_orset,
                 antidote_crdt_map_aw,
                 antidote_crdt_map_rr,
                 antidote_crdt_fat_counter

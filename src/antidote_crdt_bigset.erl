@@ -97,35 +97,12 @@ new() ->
 -spec new(integer(), integer()) -> bigset().
 new(Hash_Exponent, Max_Count) ->
 	Hash_Range = exponent_of_2(Hash_Exponent),
-	%%Atom = erlang:binary_to_atom(crypto:strong_rand_bytes(20), latin1),
-	Table = ets:new(placeholder, [set, protected, {keypos,1}, {heir,none}, {write_concurrency,true}, {read_concurrency,true}]),
+	Atom = erlang:binary_to_atom(crypto:strong_rand_bytes(20), latin1),
+	Table = ets:new(Atom, [set, protected, {keypos,1}, {heir,none}, {write_concurrency,true}, {read_concurrency,true}]),
 	Key = Hash_Range div 2,
 	Value = unique(),
 	ets:insert(Table, {{Key, Value}, antidote_crdt_bigset_shard : new(Key, [])}),
-	Temp = ets:member(Table, "Keyversions"),
-	if 
-		Temp == true ->
-			[{_Int, OldMap}] = ets:lookup(Table, "Keyversions"),
-			Temp2 = maps:is_key(Key, OldMap),
-			if 
-				Temp2 == true ->
-					{ok, ValueList} = maps: find(Key, OldMap),
-					[Head | Rest] = ValueList2 = lists: append(ValueList, [Value]),
-					if
-						%% if there are more than 10 versions of a shard, the oldest is deleted
-						length(ValueList2) > 10 ->
-							ets:delete(Table, {Key, Head}),
-							Map = maps : put(Key, Rest, OldMap);
-						true ->
-							Map = maps : put(Key, ValueList2, OldMap)
-					end;
-				true ->
-					Map = maps : put(Key, [Value], OldMap)
-			end;
-		true ->
-			Map = maps:put(Key, [Value], maps: new())
-	end,
-	ets:insert(Table, {"Keyversions", Map}),
+	ets:insert(Table, {"Keyversions", maps:put(Key, [Value], maps: new())}),
 	{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : init(Key, Value), Table}.
 
 -spec exponent_of_2(integer()) -> integer().
