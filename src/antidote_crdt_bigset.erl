@@ -98,7 +98,7 @@ new() ->
 new(Hash_Exponent, Max_Count) ->
 	Hash_Range = exponent_of_2(Hash_Exponent),
 	Atom = erlang:binary_to_atom(crypto:strong_rand_bytes(20), latin1),
-	Table = ets:new(Atom, [set, protected, {keypos,1}, {heir,none}, {write_concurrency,true}, {read_concurrency,true}]),
+	Table = ets:new(Atom, [set, public, named_table, {keypos,1}, {heir,none}, {write_concurrency,true}, {read_concurrency,true}]),
 	Key = Hash_Range div 2,
 	Value = unique(),
 	ets:insert(Table, {{Key, Value}, antidote_crdt_bigset_shard : new(Key, [])}),
@@ -142,11 +142,22 @@ contains(Elem, {Hash_Range, _Max_Count, Tree, Table} = _BigSet) ->
 	antidote_crdt_bigset_shard : contains(H_Elem, Elem, Shard). 
 
 %% @doc return all existing elements in the `bigset()'.
--spec get_tokens(elem_hash(), elem(), bigset()) -> [token()].
-get_tokens(H_Elem, Elem, {_Hash_Range, _Max_Count, Tree, Table} = _BigSet) ->
+-spec get_tokens(elem_hash(), elem(), bigset()) -> {[token()], bigset()}.
+get_tokens(H_Elem, Elem, {Hash_Range, Max_Count, Tree, Table} = BigSet) ->
 	{ok, TableKey} = antidote_crdt_bigset_keytree : get_key(H_Elem, Tree),
-	[{_Int, Shard}] = ets:lookup(Table, TableKey),
-	antidote_crdt_bigset_shard : get_tokens(H_Elem, Elem, Shard). 
+	Temp = ets:info(Table),
+	if 
+		Temp == undefined->
+			Table2 = ets:new(Table, [set, public, named_table, {keypos,1}, {heir,none}, {write_concurrency,true}, {read_concurrency,true}]),
+			Key = Hash_Range div 2,
+			Value = unique(),
+			ets:insert(Table2, {{Key, Value}, antidote_crdt_bigset_shard : new(Key, [])}),
+			ets:insert(Table2, {"Keyversions", maps:put(Key, [Value], maps: new())}),
+			{[], {Hash_Range, Max_Count, antidote_crdt_bigset_keytree : replace(Key, Value, Tree), Table2}};
+		true ->
+			[{_Int, Shard}] = ets:lookup(Table, TableKey),
+			{antidote_crdt_bigset_shard : get_tokens(H_Elem, Elem, Shard), BigSet}
+	end.
 
 %% @doc compares two bigsets, yields "true" if they contain the same elements
 %% The bigsets may differ in number of shards, so we can't compare them shard by shard
@@ -214,14 +225,14 @@ downstream({reset, {}}, BigSet) ->
     downstream({remove_all, value(BigSet)}, BigSet).
 
 %% @private generic downstream op creation for adds and removals
-- spec create_downstreams(any(), [elem()], bigset(), downstream_op())->downstream_op().
+- spec create_downstreams(any(), [elem()], bigset(), downstream_op()) -> downstream_op().
 create_downstreams(_CreateDownstream, [], _BigSet, DownstreamOps) ->
     lists : keysort(1, DownstreamOps);
 create_downstreams(CreateDownstream, [Elem|ElemsRest], {Hash_Range, _Max_Count, _Tree, _Table} = BigSet, DownstreamOps) ->
 	H_Elem = erlang : phash2(Elem, Hash_Range),
-    Tokens = get_tokens(H_Elem, Elem, BigSet),
+        {Tokens, BigSet2} = get_tokens(H_Elem, Elem, BigSet),
 	DownstreamOp = CreateDownstream(H_Elem, Elem, Tokens),
-	create_downstreams(CreateDownstream, ElemsRest, BigSet, [DownstreamOp|DownstreamOps]).
+	create_downstreams(CreateDownstream, ElemsRest, BigSet2, [DownstreamOp|DownstreamOps]).
 
 %% @doc apply downstream operations and update a bigset.
 -spec update(downstream_op(), bigset()) -> {ok, bigset()}.
