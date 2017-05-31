@@ -102,9 +102,9 @@ merge_content([{{H_Elem1, Elem1}, Tokens1}| ContentRest1]=Content1, [{{H_Elem2, 
 		{H_Elem1, Elem1} == {H_Elem2, Elem2} ->
 			[{{H_Elem1, Elem1}, Tokens1 ++ lists : subtract(Tokens2, Tokens1)} | merge_content(ContentRest1, ContentRest2)];
 		(H_Elem1 == H_Elem2 andalso Elem1 > Elem2) orelse (H_Elem1 > H_Elem2) ->
-            [{H_Elem2, Elem2, Tokens2} | merge_content(Content1, ContentRest2)];
+            [{{H_Elem2, Elem2}, Tokens2} | merge_content(Content1, ContentRest2)];
         true ->
-            [{H_Elem1, Elem1, Tokens1} | merge_content(ContentRest1, Content2)]
+            [{{H_Elem1, Elem1}, Tokens1} | merge_content(ContentRest1, Content2)]
 	end.
 		
 -spec split(shard(), integer()) -> {shard(), shard()}.
@@ -128,7 +128,7 @@ lower_half(_Key, []) ->
 	[];
 lower_half(Key, [{{H_Elem, Elem}, Tokens}| ContentRest]=_Content) ->
 	if 
-		H_Elem >= Key -> 
+		H_Elem > Key -> 
 			lower_half(Key, ContentRest);
 		true -> 
 			[{{H_Elem, Elem}, Tokens}] ++ lower_half(Key, ContentRest)
