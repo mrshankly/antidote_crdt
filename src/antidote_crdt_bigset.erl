@@ -65,11 +65,11 @@
           is_bottom/1
         ]).
 
-%-behaviour(antidote_crdt).
+-behaviour(antidote_crdt).
 
 -export_type([bigset/0, binary_bigset/0, bigset_op/0, elem/0, token/0, elem_hash/0]).
  
--type bigset() :: {integer(), integer(), antidote_crdt_bigset_keytree : tree(), atom()}.
+-type bigset() :: {integer(), integer(), antidote_crdt_bigset_keytree : tree(), atom(), token(), orddict:orddict()}.
 
 -type binary_bigset() :: binary(). %% A binary that from_binary/1 will operate on.
 
@@ -103,9 +103,10 @@ new(Hash_Exponent, Max_Count) ->
 	Table = ets:new(Atom, [set, public, named_table, {keypos,1}, {heir,none}, {write_concurrency,true}, {read_concurrency,true}]),
 	Key = Hash_Range div 2,
 	Value = unique(),
+	ID = unique(),
 	ets:insert(Table, {{Key, Value}, antidote_crdt_bigset_shard : new(Key, [])}),
 	ets:insert(Table, {"Keyversions", maps:put(Key, [Value], maps: new())}),
-	{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : init(Key, Value), Table}.
+	{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : init(Key, Value), Table, ID, [{ID,0}]}.
 
 -spec exponent_of_2(integer()) -> integer().
 exponent_of_2(0) -> 
@@ -120,7 +121,7 @@ exponent_of_2(N) ->
 
 %% @doc return all existing elements in the bigset
 -spec value(bigset()) -> [elem()].
-value({_Hash_Range, _Max_Count, Tree, Table}=_BigSet) ->
+value({_Hash_Range, _Max_Count, Tree, Table, _ID, _VV}=_BigSet) ->
 	TableKeys = antidote_crdt_bigset_keytree : get_all(Tree),
     lists:usort(value_helper(TableKeys, Table)).
 	
@@ -137,29 +138,11 @@ value_helper([Key|Rest], Table) ->
 
 %% @doc return true if the bigset contains the element
 -spec contains(elem(), bigset()) -> boolean().
-contains(Elem, {Hash_Range, _Max_Count, Tree, Table} = _BigSet) ->
+contains(Elem, {Hash_Range, _Max_Count, Tree, Table, _ID, _VV} = _BigSet) ->
 	H_Elem = erlang:phash2(Elem, Hash_Range),
 	{ok, TableKey} = antidote_crdt_bigset_keytree : get_key(H_Elem, Tree),
 	[{_Int, Shard}] = ets:lookup(Table, TableKey),
 	antidote_crdt_bigset_shard : contains(H_Elem, Elem, Shard). 
-
-%% @doc return all existing elements in the `bigset()'.
--spec get_tokens(elem_hash(), elem(), bigset()) -> [token()].
-get_tokens(H_Elem, Elem, {Hash_Range, _Max_Count, Tree, Table} = _BigSet) ->
-	{ok, TableKey} = antidote_crdt_bigset_keytree : get_key(H_Elem, Tree),
-	Temp = ets:info(Table),
-	if 
-		Temp == undefined->
-			Table2 = ets:new(Table, [set, public, named_table, {keypos,1}, {heir,none}, {write_concurrency,true}, {read_concurrency,true}]),
-			Key = Hash_Range div 2,
-			{ok,{Key2, Value}} = antidote_crdt_bigset_keytree : get_key(Key, Tree),
-			ets:insert(Table2, {{Key, Value}, antidote_crdt_bigset_shard : new(Key2, [])}),
-			ets:insert(Table2, {"Keyversions", maps:put(Key2, [Value], maps: new())}),
-			[];
-		true ->
-			[{_Int, Shard}] = ets:lookup(Table, TableKey),
-			antidote_crdt_bigset_shard : get_tokens(H_Elem, Elem, Shard)
-	end.
 
 %% @doc compares two bigsets, yields "true" if they contain the same elements
 %% The bigsets may differ in number of shards, so we can't compare them shard by shard
@@ -209,17 +192,16 @@ unique() ->
 downstream({add, Elem}, BigSet) ->
     downstream({add_all, [Elem]}, BigSet);
 downstream({add_all, Elems}, BigSet) ->
-    CreateDownstream = fun(H_Elem, Elem, CurrentTokens) ->
-        Token = unique(),
-        {H_Elem , Elem, [Token], CurrentTokens}
+    CreateDownstream = fun(H_Elem, Elem, ID, _VV) ->
+        {H_Elem , Elem, [ID], []}
     end,
     DownstreamOps = create_downstreams(CreateDownstream, lists:usort(Elems), BigSet, []),
     {ok, DownstreamOps};
 downstream({remove, Elem}, BigSet) ->
     downstream({remove_all, [Elem]}, BigSet);
 downstream({remove_all, Elems}, BigSet) ->
-    CreateDownstream = fun(H_Elem, Elem, CurrentTokens) ->
-        {H_Elem, Elem, [], CurrentTokens}
+    CreateDownstream = fun(H_Elem, Elem, _ID, VV) ->
+        {H_Elem, Elem, [], VV}
     end,
     DownstreamOps = create_downstreams(CreateDownstream, lists:usort(Elems), BigSet, []),
     {ok, DownstreamOps};
@@ -231,10 +213,9 @@ downstream({reset, {}}, BigSet) ->
 - spec create_downstreams(any(), [elem()], bigset(), downstream_op()) -> downstream_op().
 create_downstreams(_CreateDownstream, [], _BigSet, DownstreamOps) ->
     lists : keysort(1, DownstreamOps);
-create_downstreams(CreateDownstream, [Elem|ElemsRest], {Hash_Range, _Max_Count, _Tree, _Table} = BigSet, DownstreamOps) ->
+create_downstreams(CreateDownstream, [Elem|ElemsRest], {Hash_Range, _Max_Count, _Tree, _Table, ID, VV} = BigSet, DownstreamOps) ->
 	H_Elem = erlang : phash2(Elem, Hash_Range),
-        Tokens = get_tokens(H_Elem, Elem, BigSet),
-	DownstreamOp = CreateDownstream(H_Elem, Elem, Tokens),
+	DownstreamOp = CreateDownstream(H_Elem, Elem, ID, VV),
 	create_downstreams(CreateDownstream, ElemsRest, BigSet, [DownstreamOp|DownstreamOps]).
 
 %% @doc apply downstream operations and update a bigset.
@@ -247,15 +228,24 @@ update(DownstreamOp, BigSet) ->
 -spec apply_downstreams(downstream_op(), bigset()) -> bigset().
 apply_downstreams([], BigSet) ->
     BigSet;
-apply_downstreams([{H_Elem, _Elem, _ToAdd, _ToRemove} = Op|OpsRest], {_Hash_Range, _Max_Count, Tree, Table} = BigSet) ->
+%% remove
+apply_downstreams([{H_Elem, _Elem, [], _ToRemove} = Op|OpsRest], {Hash_Range, Max_Count, Tree, Table, ID, VV} = BigSet) ->
 	{ok, TableKey} = antidote_crdt_bigset_keytree : get_key(H_Elem, Tree),
 	[{_Int, Shard}] = ets:lookup(Table, TableKey),
 	{ok, Shard2} = antidote_crdt_bigset_shard : update_shard(Op, Shard),
-	BigSet2 = pick_action(BigSet, Shard2),
-	apply_downstreams(OpsRest, BigSet2).
+	Tree2 = pick_action(BigSet, Shard2),
+	apply_downstreams(OpsRest, {Hash_Range, Max_Count, Tree2, Table, ID, VV});
+%% add
+apply_downstreams([{H_Elem, Elem, [ID2], _ToRemove}|OpsRest], {Hash_Range, Max_Count, Tree, Table, ID, VV} = BigSet) ->
+	VV2 = orddict : update_counter(ID2, 1, VV),
+	{ok, TableKey} = antidote_crdt_bigset_keytree : get_key(H_Elem, Tree),
+	[{_Int, Shard}] = ets:lookup(Table, TableKey),
+	{ok, Shard2} = antidote_crdt_bigset_shard : update_shard({H_Elem, Elem, [ID2], VV2}, Shard),
+	Tree2 = pick_action(BigSet, Shard2),
+	apply_downstreams(OpsRest, {Hash_Range, Max_Count, Tree2, Table, ID, VV2}).
 
--spec pick_action(bigset(), antidote_crdt_bigset_shard : shard()) -> bigset().
-pick_action({Hash_Range, Max_Count, Tree, Table} = _BigSet, {Key, Siblings, Content} = Shard) ->
+-spec pick_action(bigset(), antidote_crdt_bigset_shard : shard()) -> antidote_crdt_bigset_keytree:tree().
+pick_action({Hash_Range, Max_Count, Tree, Table, _ID, _VV} = _BigSet, {Key, Siblings, Content} = Shard) ->
 	Size = antidote_crdt_bigset_shard : size(Shard),
 	if 
 		Size < Max_Count div 4 andalso Siblings /= [] -> 
@@ -271,12 +261,12 @@ pick_action({Hash_Range, Max_Count, Tree, Table} = _BigSet, {Key, Siblings, Cont
 					Value = unique(),
 					ets:insert(Table, {{NewKey, Value}, NewShard}),
 					ok = garbage_collect_table(Table, {NewKey, Value}),
-					{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : replace(NewKey, Value, Tree), Table};
+					antidote_crdt_bigset_keytree : replace(NewKey, Value, Tree);
 				true ->
 					Value = unique(),
 					ets:insert(Table, {{Key, Value}, Shard}),
 					ok = garbage_collect_table(Table, {Key, Value}),
-					{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : replace(Key, Value, Tree), Table}	
+					antidote_crdt_bigset_keytree : replace(Key, Value, Tree)
 			end;				
 		Size > Max_Count ->
 			Temp = exponent_of_2(length(Siblings)+1),
@@ -289,18 +279,18 @@ pick_action({Hash_Range, Max_Count, Tree, Table} = _BigSet, {Key, Siblings, Cont
 					ets:insert(Table, [{{Lower_Key, Value1}, Lower_Shard},{{Upper_Key, Value2}, Upper_Shard}]),
 					ok = garbage_collect_table(Table, {Lower_Key, Value1}),
 					ok = garbage_collect_table(Table, {Upper_Key, Value2}),
-					{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : insert_two(Lower_Key, Upper_Key, Value1, Value2, Tree), Table};
+					antidote_crdt_bigset_keytree : insert_two(Lower_Key, Upper_Key, Value1, Value2, Tree);
 				true ->
 					Value = unique(),
 					ets:insert(Table, {{Key, Value}, Shard}),
 					ok = garbage_collect_table(Table, {Key, Value}),
-					{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : replace(Key, Value, Tree), Table}
+					antidote_crdt_bigset_keytree : replace(Key, Value, Tree)
 			end;
 		true -> 
 			Value = unique(),
 			ets:insert(Table, {{Key, Value}, Shard}),
 			ok = garbage_collect_table(Table, {Key, Value}),
-			{Hash_Range, Max_Count, antidote_crdt_bigset_keytree : replace(Key, Value, Tree), Table}	
+			antidote_crdt_bigset_keytree : replace(Key, Value, Tree)
 	end.
 
 -spec garbage_collect_table(atom(), {}) -> ok.
@@ -405,19 +395,36 @@ add_much_test() ->
 	{ok, Set3} = update(DownstreamOp3, Set2),
 	?assertEqual([<<"f">>], lists: sort(value(Set3))).
 
+concurrent_test() ->
+    Elems = lists: seq(1,2000),
+    Set1 = new(32, 475),
+    {ok, DownstreamOp} = downstream({add_all, Elems}, Set1),
+    {ok, {_HashRange, _MaxCount, _Tree, _Table, _ID, _VV}=Set2} = update(DownstreamOp, Set1),
+	{ok, DownstreamOp2} = downstream({remove_all, Elems}, Set1),
+	{ok, Set3} = update(DownstreamOp2, Set2),
+    ?assertEqual(Elems, lists:sort(value(Set3))).
+
+seq_test() ->
+    Elems = lists: seq(1,2000),
+    Set1 = new(32, 475),
+    {ok, DownstreamOp} = downstream({add_all, Elems}, Set1),
+    {ok, {_HashRange, _MaxCount, _Tree, _Table, _ID, _VV}=Set2} = update(DownstreamOp, Set1),
+	{ok, DownstreamOp2} = downstream({remove_all, Elems}, Set2),
+	{ok, Set3} = update(DownstreamOp2, Set2),
+    ?assertEqual([], lists:sort(value(Set3))).
+
 add_100_test() ->
-    Elems = lists: seq(1,51000),
+    Elems = lists: seq(1,45000),
     Set1 = new(32, 475),
     {ok, DownstreamOp2} = downstream({add_all, Elems}, Set1),
-    {ok, Set2} = update(DownstreamOp2, Set1),
-	Set3 = Set2,
-    ?assertEqual(value(Set2), value(Set3)).
+    {ok, {_HashRange, _MaxCount, _Tree, _Table, _ID, _VV}=Set2} = update(DownstreamOp2, Set1),
+    ?assertEqual(Elems, lists:sort(value(Set2))).
 	%{ok, ShardKey} = antidote_crdt_bigset_keytree : get_key(4, Tree),
 	%[{_Int, Shard}] = ets:lookup(Table, ShardKey),
 	%[{_Int2, Map}] = ets:lookup(Table, "Keyversions"),
 	%[Head|_Rest] = maps:keys(Map),
 	%List = maps:get(Head, Map),
-	%?assertEqual("woah", Shard),
+	%?assertEqual("woah", {VV, Shard}).
 
 equal_test() ->
     Elems = [<<"a">>, <<"b">>, <<"c">>, <<"d">>, <<"e">>],

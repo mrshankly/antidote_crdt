@@ -6,7 +6,6 @@
 %% Callbacks
 -export([value/1,
 		 contains/3,
-		 get_tokens/3,
 		 new/2,
 		 update_shard/2,
 		 size/1,
@@ -35,16 +34,6 @@ size({_Key, _Siblings, Content}) ->
 -spec contains(elem_hash(), elem(), shard()) -> boolean().
 contains(H_Elem, Elem, {_Key, _Siblings, Content}) ->
 	orddict : is_key({H_Elem, Elem}, Content).
-
--spec get_tokens(elem_hash(), elem(), shard()) -> [token()].
-get_tokens(H_Elem, Elem, {_Key, _Siblings, Content}) ->
-	get_tokens_helper(orddict : is_key({H_Elem, Elem}, Content), H_Elem, Elem, Content).
-
--spec get_tokens_helper(boolean(), elem_hash(), elem(), content()) -> [token()].
-get_tokens_helper(true, H_Elem, Elem, Content) ->
-	orddict : fetch({H_Elem, Elem}, Content);
-get_tokens_helper(false, _H_Elem, _Elem, _Content) ->
-	[].								  
 
 %% @doc return all existing elements in the `shard()'.
 -spec value(shard()) -> [elem()].
@@ -81,14 +70,35 @@ update_shard_helper({H_Elem1, Elem1, ToAdd, ToRemove}=Op,  [{{H_Elem2, Elem2}, C
 
 %% @private create an orddict entry from a downstream op
 - spec apply_downstream(elem_hash(), elem(), tokens(), tokens(), tokens())->content().
-apply_downstream(H_Elem, Elem, CurrentTokens, ToAdd, ToRemove) ->
-    Tokens = (CurrentTokens ++ ToAdd) -- ToRemove,
-    case Tokens of
-        [] ->
-            [];
-        _ ->
-            [{{H_Elem, Elem}, Tokens}]
-    end.
+%% remove
+apply_downstream(H_Elem, Elem, CurrentTokens, [], VV) ->
+	Tokens = remove_tokens(CurrentTokens, VV),
+	if 
+		Tokens == [] ->
+			[];
+		true ->
+			[{{H_Elem, Elem}, remove_tokens(CurrentTokens, VV)}]
+	end;
+%% add
+apply_downstream(H_Elem, Elem, CurrentTokens, [ID], VV) ->
+	%% update old entry under that ID or create a new entry
+    [{{H_Elem, Elem}, orddict : store(ID, orddict : fetch(ID, VV), CurrentTokens)}].
+
+remove_tokens([], _VV) ->
+	[];
+remove_tokens(CurrentTokens, []) ->
+	CurrentTokens;
+remove_tokens([{Key1, Counter1}|Rest1]=CurrentTokens, [{Key2, Counter2}|Rest2]=VV) ->
+	if
+		Key1 > Key2 -> 
+			remove_tokens(CurrentTokens, Rest2);
+		Key1 < Key2 ->
+			[Key1, Counter1] ++ remove_tokens(Rest1, VV);
+		Counter2 >= Counter1 ->
+			remove_tokens(Rest1, Rest2);
+		true ->
+			[Key1, Counter1] ++ remove_tokens(Rest1, Rest2)
+	end.
 
 -spec merge_content(content(), content()) -> content().
 merge_content([], []) ->
@@ -99,8 +109,6 @@ merge_content([], Content2) ->
 	Content2;
 merge_content([{{H_Elem1, Elem1}, Tokens1}| ContentRest1]=Content1, [{{H_Elem2, Elem2}, Tokens2}| ContentRest2]= Content2) ->
 	if 
-		{H_Elem1, Elem1} == {H_Elem2, Elem2} ->
-			[{{H_Elem1, Elem1}, Tokens1 ++ lists : subtract(Tokens2, Tokens1)} | merge_content(ContentRest1, ContentRest2)];
 		(H_Elem1 == H_Elem2 andalso Elem1 > Elem2) orelse (H_Elem1 > H_Elem2) ->
             [{{H_Elem2, Elem2}, Tokens2} | merge_content(Content1, ContentRest2)];
         true ->
