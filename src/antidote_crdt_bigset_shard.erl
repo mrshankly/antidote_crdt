@@ -6,7 +6,7 @@
 %% Callbacks
 -export([value/1,
 		 contains/3,
-		 new/2,
+		 new/1,
 		 update_shard/2,
 		 size/1,
 		 merge_content/2,
@@ -23,9 +23,9 @@
 -type token() :: binary().
 -type tokens() :: [token()].
 
--spec new(integer(), [integer()]) -> shard().
-new(Key, Siblings) ->
-    {Key, Siblings, orddict:new()}.
+-spec new(integer()) -> shard().
+new(Key) ->
+    {Key, [], orddict:new()}.
 
 -spec size(shard()) -> integer().
 size({_Key, _Siblings, Content}) ->
@@ -115,11 +115,11 @@ merge_content([{{H_Elem1, Elem1}, Tokens1}| ContentRest1]=Content1, [{{H_Elem2, 
             [{{H_Elem1, Elem1}, Tokens1} | merge_content(ContentRest1, Content2)]
 	end.
 		
--spec split(shard(), integer()) -> {shard(), shard()}.
-split({Key, Siblings, Content}, Hash_Range) ->
+-spec split(shard()) -> {shard(), shard()}.
+split({Key, Siblings, Content}) ->
 	if 
 		Siblings == [] ->
-			KeyVal = Hash_Range div 4;
+			KeyVal = Key div 2;
 		true ->
 			KeyVal = abs(Key - lists:last(Siblings)) div 4
 	end,

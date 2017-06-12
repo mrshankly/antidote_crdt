@@ -15,7 +15,7 @@ init(K, V) ->
   	{node, {K, V, ?EMPTY_NODE, ?EMPTY_NODE}}.
 
 %% @doc Return all the shards in the tree
--spec get_all(tree()) -> [{integer(), integer()}].
+-spec get_all(tree()) -> [{integer(), binary()}].
 get_all(_Tree = ?EMPTY_NODE) ->
   	[];
 get_all(_Tree = {node, {NodeK, NodeV, ?EMPTY_NODE, ?EMPTY_NODE}}) ->
