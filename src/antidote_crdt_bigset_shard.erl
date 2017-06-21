@@ -10,7 +10,7 @@
 		 update_shard/2,
 		 size/1,
 		 merge_content/2,
-		 split/2
+		 split/1
         ]).
 
 -export_type([shard/0]).
