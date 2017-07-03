@@ -1,47 +1,4 @@
-%% -------------------------------------------------------------------
-%%
-%% crdt_bigset: A convergent, replicated, operation based observe remove set
-%%
-%% Copyright (c) 2007-2012 Basho Technologies, Inc.  All Rights Reserved.
-%%
-%% This file is provided to you under the Apache License,
-%% Version 2.0 (the "License"); you may not use this file
-%% except in compliance with the License.  You may obtain
-%% a copy of the License at
-%%
-%%   http://www.apache.org/licenses/LICENSE-2.0
-%%
-%% Unless required by applicable law or agreed to in writing,
-%% software distributed under the License is distributed on an
-%% "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-%% KIND, either express or implied.  See the License for the
-%% specific language governing permissions and limitations
-%% under the License.
-%%
-%% -------------------------------------------------------------------
-
-%% @doc
-%% An operation-based Observed-Remove Set CRDT.
-%% As the data structure is operation-based, to issue an operation, one should
-%% firstly call `downstream/2' to get the downstream version of the
-%% operation and then call `update/2'.
-%%
-%% It provides five operations: add, which adds an element to a set; add_all,
-%% adds a list of elements to a set; remove, which removes an element from a set;
-%% remove_all that removes a list of elements from the set; update, that contains
-%% a list of previous four commands.
-%%
-%% This file is adapted from riak_dt_bigset, a state-based implementation of
-%% Observed-Remove Set.
-%% The changes are as follows:
-%% 1. `generate_downstream/3' is added, as this is necessary for op-based CRDTs.
-%% 2. `merge/2' is removed.
-%% 3. There is no tombstone of removed elements.
-%%
-%% @reference Marc Shapiro, Nuno PreguicÌ§a, Carlos Baquero, Marek Zawirski (2011) A comprehensive study of
-%% Convergent and Commutative Replicated Data Types. http://hal.upmc.fr/inria-00555588/
-%%
-%% @end
+%% @author Luc Francois, francois.luc93@gmail.com
 -module(antidote_crdt_bigset).
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl"). 
@@ -67,9 +24,9 @@
           is_bottom/1
         ]).
 
-%-behaviour(antidote_crdt).
+-behaviour(antidote_crdt).
 
--export_type([bigset/0, binary_bigset/0, bigset_op/0, elem/0, token/0, elem_hash/0]).
+-export_type([bigset/0, binary_bigset/0, bigset_op/0, elem/0, token/0]).
  
 -type bigset() :: {atom(), integer(), integer(), antidote_crdt_bigset_keytree : tree(), atom(), token(), 
 				   		orddict:orddict()}.
@@ -88,46 +45,33 @@
 %%  - the first component is the elem that was added or removed
 %%  - the second component is the list of supporting tokens to be added
 %%  - the third component is the list of supporting tokens to be removed
--type downstream_op() :: [{elem_hash(), elem(), tokens(), tokens()}].
+-type downstream_op() :: [{elem(), tokens(), tokens()}].
 -type elem() :: term(). 
--type tablekey() :: {integer(), binary(), erlang:system_time()}.
--type elem_hash() :: integer().
+-type key() :: {integer(), integer()}.
+-type tablekey() :: {{integer(), integer()}, {binary(), erlang:system_time()}}.
 -type token() :: binary().
 -type tokens() :: [token()].
 	
 %% Hash_Exponent bust be between 0 and 32
 -spec new() -> bigset().
 new() ->
-	new(20, 475).
+	new(350).
 
 %% Hash_Exponent bust be between 0 and 32
--spec new(integer(), integer()) -> bigset().
-new(Hash_Exponent, Max_Count) ->
-	Hash_Range = exponent_of_2(Hash_Exponent),
+-spec new(integer()) -> bigset().
+new(Max_Count) ->
 	Table = ets:new(erlang:binary_to_atom(unique(), latin1), [set, public, named_table, {keypos,1}, {heir,none}, {write_concurrency,false}, 
 		{read_concurrency,true}]),
-	Key = Hash_Range div 2,
 	Time = erlang:system_time(),
 	Value = unique(),
 	ID = unique(),
 	ets:insert(Table, {"LastGC", 0}),
-	ets:insert(Table, {{Key, Value, Time}, 0, antidote_crdt_bigset_shard : new(Key)}),
-	{big, Hash_Range, Max_Count, antidote_crdt_bigset_keytree : init(Key, {Value, Time}), Table, ID, [{ID,0}]}.
-
--spec exponent_of_2(integer()) -> integer().
-exponent_of_2(0) -> 
-	1;
-exponent_of_2(N) ->
-	if 
-		N > 32 -> 
-			exponent_of_2(32);
-		true ->
-			2*exponent_of_2(N-1)
-	end.
+	ets:insert(Table, {{{min, max}, {Value, Time}}, 0, antidote_crdt_bigset_shard : new()}),
+	{big, Max_Count, antidote_crdt_bigset_keytree : init(3, {Value, Time}), Table, ID, [{ID,0}]}.
 
 %% @doc return all existing elements in the bigset
 -spec value(bigset()) -> [elem()].
-value({_Big, _Hash_Range, _Max_Count, Tree, Table, _ID, _VV}=_BigSet) ->
+value({_Big, _Max_Count, Tree, Table, _ID, _VV}=_BigSet) ->
     lists:usort(value_helper(antidote_crdt_bigset_keytree : get_all(Tree), Table)).
 	
 -spec value_helper([integer()], atom()) -> [elem()].
@@ -135,19 +79,27 @@ value_helper([Key|Rest], Table) ->
 	case Rest of
         [] ->
 			Shard = ets:lookup_element(Table, Key, 3),
-            antidote_crdt_bigset_shard : value(Shard);
+			if 
+				Shard == [] -> 
+					[];
+				true ->
+					orddict:fetch_keys(Shard)
+			end;
         _ ->
 			Shard = ets:lookup_element(Table, Key, 3),
-            antidote_crdt_bigset_shard : value(Shard) ++ value_helper(Rest, Table)
+			if 
+				Shard == [] -> 
+					[] ++ value_helper(Rest, Table);
+				true ->
+					orddict:fetch_keys(Shard) ++ value_helper(Rest, Table)
+			end
 	end.
 
 %% @doc return true if the bigset contains the element
 -spec contains(elem(), bigset()) -> boolean().
-contains(Elem, {_Big, Hash_Range, _Max_Count, Tree, Table, _ID, _VV} = _BigSet) ->
-	H_Elem = erlang:phash2(Elem, Hash_Range),
-	{ok, TableKey} = antidote_crdt_bigset_keytree : get_key(H_Elem, Tree),
-	Shard = ets:lookup_element(Table, TableKey, 3),
-	antidote_crdt_bigset_shard : contains(H_Elem, Elem, Shard). 
+contains(Elem, {_Big, _Max_Count, Tree, Table, _ID, _VV} = _BigSet) ->
+	TableKey = antidote_crdt_bigset_keytree : get_key(Elem, Tree),
+	orddict : is_key(Elem, ets:lookup_element(Table, TableKey, 3)). 
 
 %% @doc compares two bigsets, yields "true" if they contain the same elements
 %% The bigsets may differ in number of shards, so we can't compare them shard by shard
@@ -186,7 +138,7 @@ from_binary(<<?TAG:8/integer, ?V1_VERS:8/integer, Bin/binary>>) ->
 %% @doc generate a unique identifier (best-effort).
 -spec unique() -> token().
 unique() ->
-    crypto:strong_rand_bytes(20).
+    crypto:strong_rand_bytes(10).
 
 %% @doc generate downstream operations.
 %% If the operation is add or add_all, send the own replica ID
@@ -197,17 +149,17 @@ unique() ->
 downstream({add, Elem}, BigSet) ->
     downstream({add_all, [Elem]}, BigSet);
 downstream({add_all, Elems}, BigSet) ->
-    CreateDownstream = fun(H_Elem, Elem, ID, _VV) ->
-        {H_Elem , Elem, [ID], []}
+    CreateDownstream = fun(Elem, ID, _VV) ->
+        {Elem, [ID], []}
     end,
-    {ok, create_downstreams(CreateDownstream, lists:usort(Elems), BigSet, [])};
+    {ok, create_downstreams(CreateDownstream, Elems, BigSet, [])};
 downstream({remove, Elem}, BigSet) ->
     downstream({remove_all, [Elem]}, BigSet);
 downstream({remove_all, Elems}, BigSet) ->
-    CreateDownstream = fun(H_Elem, Elem, _ID, VV) ->
-        {H_Elem, Elem, [], VV}
+    CreateDownstream = fun(Elem, _ID, VV) ->
+        {Elem, [], VV}
     end,
-    {ok, create_downstreams(CreateDownstream, lists:usort(Elems), BigSet, [])};
+    {ok, create_downstreams(CreateDownstream, Elems, BigSet, [])};
 downstream({reset, {}}, BigSet) ->
     % reset is like removing all elements
     downstream({remove_all, value(BigSet)}, BigSet).
@@ -215,9 +167,9 @@ downstream({reset, {}}, BigSet) ->
 %% @private generic downstream op creation for adds and removals
 - spec create_downstreams(any(), [elem()], bigset(), downstream_op()) -> downstream_op().
 create_downstreams(_CreateDownstream, [], _BigSet, DownstreamOps) ->
-    lists : keysort(1, DownstreamOps);
-create_downstreams(CreateDownstream, [Elem|ElemsRest], {_Big, Hash_Range, _Max_Count, _Tree, _Table, ID, VV} = BigSet, DownstreamOps) ->
-	DownstreamOp = CreateDownstream(erlang : phash2(Elem, Hash_Range), Elem, ID, VV),
+    DownstreamOps;
+create_downstreams(CreateDownstream, [Elem|ElemsRest], {_Big, _Max_Count, _Tree, _Table, ID, VV} = BigSet, DownstreamOps) ->
+	DownstreamOp = CreateDownstream(Elem, ID, VV),
 	create_downstreams(CreateDownstream, ElemsRest, BigSet, [DownstreamOp|DownstreamOps]).
 
 %% @doc apply downstream operations and update a bigset.
@@ -231,35 +183,60 @@ update(DownstreamOp, BigSet) ->
 apply_downstreams([], BigSet) ->
     BigSet;
 %% remove
-apply_downstreams([{H_Elem, _Elem, [], _ToRemove} = Op|OpsRest], {_Big, _Hash_Range, _Max_Count, Tree, Table, _ID, _VV} = BigSet) ->
-	{ok, TableKey} = antidote_crdt_bigset_keytree : get_key(H_Elem, Tree),
+apply_downstreams([{Elem, [], _ToRemove} = Op|OpsRest], {_Big, _Max_Count, Tree, Table, _ID, _VV} = BigSet) ->
+	{Key, _} = TableKey = antidote_crdt_bigset_keytree : get_key(Elem, Tree),
 	[{_, Ref_Count, Shard}] = ets:lookup(Table, TableKey),
 	{ok, Shard2} = antidote_crdt_bigset_shard : update_shard(Op, Shard),
-	apply_downstreams(OpsRest, pick_action(BigSet, Shard2, TableKey, Ref_Count));
+	apply_downstreams(OpsRest, pick_action(BigSet, Shard2, TableKey, Ref_Count, Key, remove));
 %% add
-apply_downstreams([{H_Elem, Elem, [ID2], _ToRemove}|OpsRest], {_Big, Hash_Range, Max_Count, Tree, Table, ID, VV} = BigSet) ->
+apply_downstreams([{Elem, [ID2], _ToRemove}|OpsRest], {_Big, Max_Count, Tree, Table, ID, VV} = BigSet) ->
 	VV2 = orddict : update_counter(ID2, 1, VV),
-	{ok, TableKey} = antidote_crdt_bigset_keytree : get_key(H_Elem, Tree),
+	{Key, _} = TableKey = antidote_crdt_bigset_keytree : get_key(Elem, Tree),
 	[{_, Ref_Count, Shard}] = ets:lookup(Table, TableKey),
-	{ok, Shard2} = antidote_crdt_bigset_shard : update_shard({H_Elem, Elem, [ID2], VV2}, Shard),
-	{Big, Hash_Range, Max_Count, Tree2, Table, ID, VV} = pick_action(BigSet, Shard2, TableKey, Ref_Count),
-	apply_downstreams(OpsRest, {Big, Hash_Range, Max_Count, Tree2, Table, ID, VV2}).
+	{ok, Shard2} = antidote_crdt_bigset_shard : update_shard({Elem, [ID2], VV2}, Shard),
+	{Big, Max_Count, Tree2, Table, ID, VV} = pick_action(BigSet, Shard2, TableKey, Ref_Count, Key, add),
+	apply_downstreams(OpsRest, {Big, Max_Count, Tree2, Table, ID, VV2}).
 
--spec pick_action(bigset(), antidote_crdt_bigset_shard : shard(), tablekey(), integer()) -> bigset().
-pick_action({Big, Hash_Range, Max_Count, Tree, Table, ID, VV} = BigSet, 
-				{Key, Siblings, Content} = Shard, OldTableKey, Ref_Count) ->
-	Size = antidote_crdt_bigset_shard : size(Shard),
+-spec pick_action(bigset(), antidote_crdt_bigset_shard : shard(), tablekey(), integer(), key(), atom()) -> bigset().
+pick_action({Big, Max_Count, Tree, Table, ID, VV} = BigSet, Shard, OldTableKey, Ref_Count, {Min, Max} = Key, Atom) ->
+	Size = orddict:size(Shard),
 	if 
-		Size < Max_Count div 4 andalso Siblings /= [] -> 
-			SiblingKey = lists:last(Siblings),
-			{ok, SiblingsTableKey} = antidote_crdt_bigset_keytree : get_key(SiblingKey, Tree),
-			[{_, Sibling_Ref_Count, {_SiblingKey, Siblings2, SiblingContent}= _Sibling}] = ets:lookup(Table, SiblingsTableKey),
-			SiblingSize = length(SiblingContent),
-			Key2 = lists:last(Siblings2),
+		Atom == remove andalso Size < Max_Count div 4 andalso {Min, Max} /= {min, max} -> 
+			if 
+				Min /= min ->
+					SiblingTableKey1 = antidote_crdt_bigset_keytree : get_key_left(Min, Tree),
+					[{_, Sibling_Ref_Count1, Sibling1}] = ets:lookup(Table, SiblingTableKey1),
+					SizeLeft = orddict:size(Sibling1);
+				true ->
+					{SiblingTableKey1, Sibling_Ref_Count1, Sibling1} = {ok,ok,ok},
+					SizeLeft = infinite
+			end,
+			if 
+				Max /= max ->
+					SiblingTableKey2 = antidote_crdt_bigset_keytree : get_key_right(Min, Tree),
+					[{_, Sibling_Ref_Count2, Sibling2}] = ets:lookup(Table, SiblingTableKey2),
+					SizeRight = orddict:size(Sibling2);
+				true ->
+					{SiblingTableKey2, Sibling_Ref_Count2, Sibling2} = {ok,ok,ok},
+					SizeRight = infinite
+			end,
+			% pick smallest sibling
 			if
-				Key == Key2 andalso SiblingSize < (Max_Count div 2) ->
-					NewKey = (Key + SiblingKey) div 2,
-					NewShard = {NewKey, lists : droplast(Siblings), antidote_crdt_bigset_shard : merge_content(Content, SiblingContent)},
+				SizeRight >= SizeLeft ->
+					Sibling_Ref_Count = Sibling_Ref_Count1,
+					SiblingSize = SizeLeft,
+					{{SiblingMin, SiblingMax}, _} = SiblingTableKey = SiblingTableKey1,
+					Sibling = Sibling1;
+				true ->
+					Sibling_Ref_Count = Sibling_Ref_Count2,
+					SiblingSize = SizeRight,
+					{{SiblingMin, SiblingMax}, _} = SiblingTableKey = SiblingTableKey2,
+					Sibling = Sibling2
+			end,
+			if
+				SiblingSize < (Max_Count div 2) ->
+					NewKey = {min_bound(Min, SiblingMin), max_bound(Max, SiblingMax)},
+					NewShard = antidote_crdt_bigset_shard : merge(Shard, Sibling),
 					if 
 						% intermediate version, can be deleted immediately
 						Ref_Count == 0 ->
@@ -271,49 +248,63 @@ pick_action({Big, Hash_Range, Max_Count, Tree, Table, ID, VV} = BigSet,
 					if 
 						% intermediate version, can be deleted immediately
 						Sibling_Ref_Count == 0 ->
-							ets:delete(Table, SiblingsTableKey);
+							ets:delete(Table, SiblingTableKey);
 						% belongs to another snapshot, so mustn't be deleted at this point
 						true ->
 							ok
 					end,
 					Time = erlang:system_time(),
 					Value = unique(),
-					ets:insert(Table, {{NewKey, Value, Time}, 0, NewShard}),
-					{Big, Hash_Range, Max_Count, antidote_crdt_bigset_keytree : replace(NewKey, {Value, Time}, Tree), Table, ID, VV};
+					ets:insert(Table, {{NewKey, {Value, Time}}, 0, NewShard}),
+					Temp = antidote_crdt_bigset_keytree : remove(Key, Tree),		
+					{Big, Max_Count, antidote_crdt_bigset_keytree : replace({SiblingMin, SiblingMax}, 
+						NewKey, {Value, Time}, Temp), Table, ID, VV};
 				true ->
 					remove_intermediate(BigSet, OldTableKey, Ref_Count, Shard)
-			end;				
+			end;		
 		Size > Max_Count ->
+			{{K1, Lower_Shard}, {K2, Middle_Shard}, {K3, Upper_Shard}} = antidote_crdt_bigset_shard : split(Shard, Key),
+			Time = erlang:system_time(),
+			{V1, V2, V3} = {unique(), unique(), unique()},
 			if 
-				%% splitting not allowed, maximum tree depth reached
-				Key rem 2 == 1 -> 
-					remove_intermediate(BigSet, OldTableKey, Ref_Count, Shard);
-				%% splitting allowed
+				% intermediate version, can be deleted immediately
+				Ref_Count == 0 ->
+					ets:delete(Table, OldTableKey);
+				% belongs to another snapshot, so mustn't be deleted at this point
 				true ->
-					{{Upper_Key, _Upper_Siblings, _Upper_Content} = Upper_Shard,{Lower_Key, _Lower_Siblings, _Lower_Content} = Lower_Shard} 
-						= antidote_crdt_bigset_shard : split(Shard),
-					Time = erlang:system_time(),
-					V1 = unique(),
-					V2 = unique(),
-					if 
-						% intermediate version, can be deleted immediately
-						Ref_Count == 0 ->
-							ets:delete(Table, OldTableKey);
-						% belongs to another snapshot, so mustn't be deleted at this point
-						true ->
-							ok
-					end,
-					ets:insert(Table, [{{Lower_Key, V1, Time}, 0, Lower_Shard},{{Upper_Key, V2, Time}, 0, Upper_Shard}]),				
-					{Big, Hash_Range, Max_Count, 
-					 	antidote_crdt_bigset_keytree : insert_two(Lower_Key, Upper_Key, {V1, Time}, {V2, Time}, Tree), Table, ID, VV}
-			end;
+					ok
+			end,	
+			ets:insert(Table, [{{K1, {V1, Time}}, 0, Lower_Shard}, {{K2, {V2, Time}}, 0, Middle_Shard},{{K3, {V3, Time}}, 0, Upper_Shard}]),
+			{Big, Max_Count, antidote_crdt_bigset_keytree : insert_three(K1, K2, K3, {V1, Time}, {V2, Time}, {V3, Time}, Tree), Table, ID, VV};
 		true -> 
 			remove_intermediate(BigSet, OldTableKey, Ref_Count, Shard)
 	end.
 
+-spec min_bound(term(), term()) -> term().
+min_bound(A, B) ->
+	if 
+		A == min ->
+			A;
+		B == min ->
+			B;
+		true ->
+			erlang:min(A, B)
+	end.
+
+-spec max_bound(term(), term()) -> term().
+max_bound(A, B) ->
+	if 
+		A == max ->
+			A;
+		B == max ->
+			B;
+		true ->
+			erlang:max(A, B)
+	end.
+
 % delete intermediate versions
 -spec remove_intermediate(bigset(), tablekey(), integer(), antidote_crdt_bigset_shard:shard()) -> bigset().
-remove_intermediate({Big, Hash_Range, Max_Count, Tree, Table, ID, VV}=BigSet, {Key, _, _} = TableKey, Ref_Count, Shard)->
+remove_intermediate({Big, Max_Count, Tree, Table, ID, VV}=BigSet, {Key, _} = TableKey, Ref_Count, Shard)->
 	if 
 		% intermediate version, can be deleted immediately
 		Ref_Count == 0 ->
@@ -323,8 +314,8 @@ remove_intermediate({Big, Hash_Range, Max_Count, Tree, Table, ID, VV}=BigSet, {K
 		true ->
 			Value = unique(),
 			Time = erlang: system_time(),
-			ets:insert(Table, {{Key, Value, Time}, 0, Shard}),
-			{Big, Hash_Range, Max_Count, antidote_crdt_bigset_keytree : replace(Key, {Value, Time}, Tree), Table, ID, VV}
+			ets:insert(Table, {{Key, {Value, Time}}, 0, Shard}),
+			{Big, Max_Count, antidote_crdt_bigset_keytree : replace(Key, Key, {Value, Time}, Tree), Table, ID, VV}
 	end.
 
 %% snapshot is deleted
@@ -350,7 +341,7 @@ remove_tokens(Table, [{Key, Inc}|Rest]) ->
 delete_old(Table)->
 	ets:safe_fixtable(Table, true),
 	LastGC = ets:lookup_element(Table, "LastGC", 2),
-	delete_old(Table, ets:first(Table), LastGC+(erlang:system_time()-LastGC)div 2).
+	delete_old(Table, ets:first(Table), LastGC+4*(erlang:system_time()-LastGC)div 5).
 -spec delete_old(atom(), tablekey(), erlang:system_time()) -> ok.
 delete_old(Table, '$end_of_table', _LastGC)->
 	ets:update_element(Table, "LastGC", {2, erlang:system_time()}),
@@ -358,7 +349,7 @@ delete_old(Table, '$end_of_table', _LastGC)->
 	ok;
 delete_old(Table, "LastGC", LastGC) ->
 	delete_old(Table, ets:next(Table, "LastGC"), LastGC);
-delete_old(Table, {_Key, _Version, Time}=TableKey, LastGC)->
+delete_old(Table, {_Key, {_Version, Time}}=TableKey, LastGC)->
 	if
 		Time < LastGC ->
 			Ref_Count = ets:lookup_element(Table, TableKey, 2),
@@ -421,16 +412,13 @@ contains_test() ->
 
 add_test() ->
     Elem = <<"foo">>,
-	H_Elem = erlang:phash2(Elem, 1048576),
     Elems = [<<"li">>, <<"manu">>],
-	H_Elem2 = erlang:phash2(<<"li">>, 1048576),
-	H_Elem3 = erlang:phash2(<<"manu">>, 1048576),
-    Set1 = new(),
+    Set1 = new(4),
     {ok, DownstreamOp1} = downstream({add, Elem}, Set1),
-    ?assertMatch([{H_Elem, Elem, _, _}], DownstreamOp1),
+    ?assertMatch([{Elem, _, _}], DownstreamOp1),
     {ok, DownstreamOp2} = downstream({add_all, Elems}, Set1),
 	%% manu and li are exchanged because DownstreamOp2 is sorted according to the hashed element
-    ?assertMatch([{H_Elem3, <<"manu">>, _, _}, {H_Elem2, <<"li">>, _, _}], DownstreamOp2),
+    ?assertMatch([{<<"manu">>, _, _}, {<<"li">>, _, _}], DownstreamOp2),
     {ok, Set2} = update(DownstreamOp1, Set1),
     ?assertEqual([Elem], value(Set2)),
     {ok, Set3} = update(DownstreamOp2, Set2),
@@ -439,12 +427,12 @@ add_test() ->
 add_much_test() ->
     Elems = [<<"a">>, <<"b">>, <<"c">>, <<"d">>, <<"e">>, <<"f">>, <<"g">>, 
 			 	<<"h">>, <<"i">>, <<"j">>, <<"k">>, <<"l">>, <<"m">>, <<"n">>, <<"o">>, <<"p">>, <<"q">>],
-    Set1 = new(32, 4),
+    Set1 = new(4),
     {ok, DownstreamOp2} = downstream({add_all, Elems}, Set1),
-    ?assertMatch([{_, <<"a">>, _, _}, {_, <<"b">>, _, _}, {_, <<"c">>, _, _}, {_, <<"d">>, _, _}, {_, <<"e">>, _, _},
-				  {_, <<"f">>, _, _}, {_, <<"g">>, _, _}, {_, <<"h">>, _, _}, {_, <<"i">>, _, _}, {_, <<"j">>, _, _},
-				  {_, <<"k">>, _, _}, {_, <<"l">>, _, _}, {_, <<"m">>, _, _}, {_, <<"n">>, _, _}, {_, <<"o">>, _, _},
-				  {_, <<"p">>, _, _}, {_, <<"q">>, _, _}], lists : keysort(2,DownstreamOp2)),
+    ?assertMatch([{<<"a">>, _, _}, {<<"b">>, _, _}, {<<"c">>, _, _}, {<<"d">>, _, _}, {<<"e">>, _, _},
+				  {<<"f">>, _, _}, {<<"g">>, _, _}, {<<"h">>, _, _}, {<<"i">>, _, _}, {<<"j">>, _, _},
+				  {<<"k">>, _, _}, {<<"l">>, _, _}, {<<"m">>, _, _}, {<<"n">>, _, _}, {<<"o">>, _, _},
+				  {<<"p">>, _, _}, {<<"q">>, _, _}], lists : keysort(1,DownstreamOp2)),
     {ok, Set2} = update(DownstreamOp2, Set1),
     ?assertEqual(Elems, lists: sort(value(Set2))),
 	Elems2 = lists:delete(<<"f">>, Elems),
@@ -453,8 +441,8 @@ add_much_test() ->
 	?assertEqual([<<"f">>], lists: sort(value(Set3))).
 
 seq_test() ->
-    Elems = lists: seq(1,2000),
-    Set1 = new(32, 475),
+    Elems = lists: seq(1,1000),
+    Set1 = new(2),
     {ok, DownstreamOp} = downstream({add_all, Elems}, Set1),
     {ok, Set2} = update(DownstreamOp, Set1),
 	{ok, DownstreamOp2} = downstream({remove_all, Elems}, Set2),
@@ -462,19 +450,34 @@ seq_test() ->
     ?assertEqual([], value(Set3)).
 
 add_100_test() ->
-    Elems = lists: seq(1,23000),
-    Set1 = new(32, 475),
+    Elems = lists: seq(1,5000),
+    Set1 = new(10),
     {ok, DownstreamOp2} = downstream({add_all, Elems}, Set1),
     {ok, Set2} = update(DownstreamOp2, Set1),
     ?assertEqual(Elems, value(Set2)).
 
+fill(0, List)->
+	List;
+fill(N, List)->
+	fill(N-1, List++[unique()]).
+	%fill(N-1, List++[erlang:binary_to_atom(unique(), latin1)]).
+
+add_random_test() ->
+    Elems = fill(8000, []),
+    Set1 = new(5),
+    {ok, DownstreamOp2} = downstream({add_all, Elems}, Set1),
+    {ok, Set2} = update(DownstreamOp2, Set1),
+    ?assertEqual(lists:sort(Elems), value(Set2)),
+	{ok, DownstreamOp3} = downstream({remove_all, Elems}, Set2),
+    {ok, Set3} = update(DownstreamOp3, Set2),
+	?assertEqual([], value(Set3)).
+
 equal_test() ->
     Elems = [<<"a">>, <<"b">>, <<"c">>, <<"d">>, <<"e">>],
-    Set1 = new(32, 4),
-	Set5 = new(32, 4),
+    Set1 = new(4),
+	Set5 = new(4),
     {ok, DownstreamOp2} = downstream({add_all, Elems}, Set1),
-    ?assertMatch([{_, <<"a">>, _, _}, {_, <<"b">>, _, _}, {_, <<"c">>, _, _}, {_, <<"d">>, _, _}, {_, <<"e">>, _, _}
-				  ], lists : keysort(2,DownstreamOp2)),
+    ?assertMatch([{<<"a">>, _, _}, {<<"b">>, _, _}, {<<"c">>, _, _}, {<<"d">>, _, _}, {<<"e">>, _, _}], lists : keysort(1,DownstreamOp2)),
 	%% Set is split in 2 shards because it has 5 elements while a maximum of 4 elements fit into one shard
     {ok, Set2} = update(DownstreamOp2, Set1),
 	Elems2 = lists: delete(<<"a">>, Elems),
