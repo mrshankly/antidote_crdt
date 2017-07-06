@@ -18,7 +18,7 @@ init(T, V) ->
 
 -spec insert_three(key(), key(), key(), any(), any(), any(), tree())->tree().
 insert_three(K1, K2, K3, V1, V2, V3, {Max_Keys, Root}=_Tree) ->
-	NewNode = insert_keys(K1, K2, K3, V1, V2, V3, Root, Max_Keys),
+	NewNode = insert_keys(K1, K2, K3, V1, V2, V3, Root, Max_Keys, 1),
 	case NewNode of
 		{Node1, Node2, NewKey, NewValue} ->
 			New = [{NewKey, NewValue, Node1}, {-1, ok, Node2}];
@@ -28,10 +28,10 @@ insert_three(K1, K2, K3, V1, V2, V3, {Max_Keys, Root}=_Tree) ->
 	{Max_Keys, New}.
 
 % shard was splitted, so search for the old shard and replace that key, so while 2 keys are added, one is also removed
--spec insert_keys(key(), key(), key(), any(), any(), any(), treenode(), integer()) -> treenode()|{treenode(), treenode(), {key(), any()}}.
-insert_keys(K1, K2, K3, V1, V2, V3, [{-1, ok, Child}]=_Node, Max_Keys) ->
+-spec insert_keys(key(), key(), key(), any(), any(), any(), treenode(), integer(), integer()) -> treenode()|{treenode(), treenode(), {key(), any()}}.
+insert_keys(K1, K2, K3, V1, V2, V3, [{-1, ok, Child}]=_Node, Max_Keys, _Pos) ->
 	% go into rightmost child
-	NewChild = insert_keys(K1, K2, K3, V1, V2, V3, Child, Max_Keys),
+	NewChild = insert_keys(K1, K2, K3, V1, V2, V3, Child, Max_Keys, 1),
 	case NewChild of
 		%% adding keys to the child resulted in splitting
 		{Node1, Node2, NewKey, NewValue} ->
@@ -39,13 +39,13 @@ insert_keys(K1, K2, K3, V1, V2, V3, [{-1, ok, Child}]=_Node, Max_Keys) ->
 		_ ->
 			[{-1, ok, NewChild}]
 	end;
-insert_keys({Min, _} = K1, K2, {_, Max} = K3, V1, V2, V3, [{{OldMin, OldMax} = OldKey, Value, Child}|Rest]=_Node, Max_Keys) ->
+insert_keys({Min, _} = K1, K2, K3, V1, V2, V3, [{{OldMin, OldMax} = OldKey, Value, Child}|Rest]=_Node, Max_Keys, Pos) ->
 	if 
-		% we found the shard that was splitted and replace it by the two new shards
+		% we found the shard that was splitted and replace it by the new shards
 		% also we are in a leaf, so we just add these two to the leaf
 		% last condition makes sure to split only when in the leftmost key
 		% this case matches only when inserting into the root
-		Min == OldMin andalso Child == ?EMPTY_NODE andalso Min == min ->
+		Min == OldMin andalso Child == ?EMPTY_NODE andalso Pos == 1 ->
 			try_split([{K1, V1, ?EMPTY_NODE}, {K2, V2, ?EMPTY_NODE}, {K3, V3, ?EMPTY_NODE}] ++ Rest, Max_Keys);
 		Min == OldMin andalso Child == ?EMPTY_NODE ->
 			[{K1, V1, ?EMPTY_NODE}, {K2, V2, ?EMPTY_NODE}, {K3, V3, ?EMPTY_NODE}] ++ Rest;
@@ -62,8 +62,8 @@ insert_keys({Min, _} = K1, K2, {_, Max} = K3, V1, V2, V3, [{{OldMin, OldMax} = O
 			end;			
 		% go into left child if smaller. Atom min denotes a value smaller than all other values, thus the additional condition, similar for Atom max
 		% there is a child, because otherwise Max2 could not be inferior to OldMin
-		Min < OldMin orelse Min == min ->
-			NewChild = insert_keys(K1, K2, K3, V1, V2, V3, Child, Max_Keys),
+		(Min < OldMin andalso OldMin /= min) orelse Min == min  ->
+			NewChild = insert_keys(K1, K2, K3, V1, V2, V3, Child, Max_Keys, 1),
 			case NewChild of
 				{Node1, Node2, NewKey, NewValue} ->
 					try_split([{NewKey, NewValue, Node1}, {OldKey, Value, Node2}] ++ Rest, Max_Keys);
@@ -71,15 +71,15 @@ insert_keys({Min, _} = K1, K2, {_, Max} = K3, V1, V2, V3, [{{OldMin, OldMax} = O
 					try_split([{OldKey, Value, NewChild}] ++ Rest, Max_Keys)
 			end;
 		% larger than the current key, go one key to the right
-		(OldMax =< Min andalso Child == ?EMPTY_NODE) orelse Max == max ->
+		(OldMax =< Min orelse OldMin == min) andalso Child == ?EMPTY_NODE ->
 			if 
-				Min == min ->
-					try_split([{OldKey, Value, Child}] ++ insert_keys(K1, K2, K3, V1, V2, V3, Rest, Max_Keys), Max_Keys);
+				Pos == 1 ->
+					try_split([{OldKey, Value, Child}] ++ insert_keys(K1, K2, K3, V1, V2, V3, Rest, Max_Keys, Pos + 1), Max_Keys);
 				true ->
-					[{OldKey, Value, Child}] ++ insert_keys(K1, K2, K3, V1, V2, V3, Rest, Max_Keys)
+					[{OldKey, Value, Child}] ++ insert_keys(K1, K2, K3, V1, V2, V3, Rest, Max_Keys, Pos + 1)
 			end;			
-		OldMax =< Min orelse Max == max ->
-			try_split([{OldKey, Value, Child}] ++ insert_keys(K1, K2, K3, V1, V2, V3, Rest, Max_Keys), Max_Keys) 
+		OldMax =< Min orelse OldMin == min ->
+			try_split([{OldKey, Value, Child}] ++ insert_keys(K1, K2, K3, V1, V2, V3, Rest, Max_Keys, Pos + 1), Max_Keys) 
 	end.
 
 -spec try_split(treenode(), integer())-> treenode()|{treenode(), treenode(), key(), any()}.
@@ -159,14 +159,14 @@ get_key_left_helper(Elem, [{-1, ok, Child}])->
 	end;
 get_key_left_helper(Elem, [{{Min, Max}, NodeV, Child}|Rest] = _Node)->
 	if 
-		Elem < Min andalso Min /= min ->
+		(Elem < Min orelse Elem == min) andalso Min /= min ->
 			case get_key_left_helper(Elem, Child) of
 				ok ->
 					left;
 				Return ->
 					Return
 			end;
-		Elem >= Max andalso Max /= max->
+		(Elem >= Max andalso Max /= max andalso Elem /= min) orelse (Min == min andalso Elem /= min) ->
 			case get_key_left_helper(Elem, Rest) of
 				left ->
 					{{Min, Max}, NodeV};
@@ -190,13 +190,13 @@ get_key_left_helper(Elem, [{{Min, Max}, NodeV, Child}|Rest] = _Node)->
 %%
 -spec get_key_right(integer(), tree()) -> {key(), any()}.
 get_key_right(Elem, {_Max_Keys, Root} = _Tree)->
-		get_key_right_helper(Elem, Root).
+	get_key_right_helper(Elem, Root).
 -spec get_key_right_helper(integer(), treenode()) -> {key(), any()}.
 get_key_right_helper(Elem, [{-1, ok, Child}])->
 	get_key_right_helper(Elem, Child);
 get_key_right_helper(Elem, [{{Min, Max}, NodeV, Child}|Rest] = _Node)->
 	if 
-		Elem < Min andalso Min /= min ->
+		(Elem < Min orelse Elem == min) andalso Min /= min ->
 			case get_key_right_helper(Elem, Child) of
 				parent ->
 					{{Min, Max}, NodeV};
@@ -204,7 +204,7 @@ get_key_right_helper(Elem, [{{Min, Max}, NodeV, Child}|Rest] = _Node)->
 					Result
 			end;
 		% Max is in the next shard
-		Elem >= Max andalso Max /= max->
+		(Elem >= Max andalso Max /= max andalso Elem /= min) orelse (Min == min andalso Elem /= min) ->
 			get_key_right_helper(Elem, Rest);
 		true ->
 			if 
@@ -305,7 +305,7 @@ remove({KeyMin, KeyMax} = K, [{{OldMin, OldMax}, V, Child}, {Next_K, Next_V, Nex
 				Rem_Rest ->
 					[{{OldMin, OldMax}, V, Rem_Rest}, Next] ++ Rest
 			end;
-		KeyMax >= OldMax orelse KeyMax == max ->
+		KeyMax > OldMax orelse KeyMax == max ->
 			case Next of
 				{-1, ok, Next_Child} ->
 					Rem = remove(K, Next_Child, Min_Keys, 1),
