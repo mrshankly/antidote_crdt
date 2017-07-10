@@ -1,186 +1,174 @@
 %% @author Luc Francois, francois.luc93@gmail.com
 
 -module(antidote_crdt_bigset_keytree).
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl"). 
-%-include_lib("C:/Users/Luehk/workspace/Bigset/include/eunit/include/eunit.hrl"). 
--endif. 
--export([init/2, insert_three/7, get_key/2, get_key_left/2, get_key_right/2, get_all/1, replace/4, remove/2]).
--define(EMPTY_NODE, {'empty'}).
--type tree() :: {integer(), treenode()}.
--type treenode() :: [{integer(), any(), treenode()}]|?EMPTY_NODE.
+-export([init/1, insert_three/7, get_key/2, get_key_left/2, get_key_right/2, get_all/1, replace/4, remove/2]).
+-define(EMPTY_NODE, empty).
+-define(EMPTY_KEY, -1).
+-define(EMPTY_VALUE, ok).
+-define(MAX_KEYS, 3).
+-define(MIN_KEYS, 1+ ?MAX_KEYS / 2).
+-type tree() :: [{integer(), any(), tree()}]|?EMPTY_NODE.
 -type key() :: {integer(), integer()}.
 
 %% @doc Initialize the root of the tree
--spec init(integer(), any()) -> tree(). 
-init(T, V) ->
-	{T, [{{min, max}, V, ?EMPTY_NODE}, {-1, ok, ?EMPTY_NODE}]}.
+-spec init(any()) -> tree(). 
+init(V) ->
+	[{{min, max}, V, ?EMPTY_NODE}, {?EMPTY_KEY, ?EMPTY_VALUE, ?EMPTY_NODE}].
 
 -spec insert_three(key(), key(), key(), any(), any(), any(), tree())->tree().
-insert_three(K1, K2, K3, V1, V2, V3, {Max_Keys, Root}=_Tree) ->
-	NewNode = insert_keys(K1, K2, K3, V1, V2, V3, Root, Max_Keys, 1),
+insert_three(K1, K2, K3, V1, V2, V3, Tree) ->
+	NewNode = insert_keys(K1, K2, K3, V1, V2, V3, Tree, 1),
 	case NewNode of
 		{Node1, Node2, NewKey, NewValue} ->
-			New = [{NewKey, NewValue, Node1}, {-1, ok, Node2}];
+			[{NewKey, NewValue, Node1}, {?EMPTY_KEY, ?EMPTY_VALUE, Node2}];
 		_ ->
-			New = NewNode
-	end,
-	{Max_Keys, New}.
+			NewNode
+	end.
 
 % shard was splitted, so search for the old shard and replace that key, so while 2 keys are added, one is also removed
--spec insert_keys(key(), key(), key(), any(), any(), any(), treenode(), integer(), integer()) -> treenode()|{treenode(), treenode(), {key(), any()}}.
-insert_keys(K1, K2, K3, V1, V2, V3, [{-1, ok, Child}]=_Node, Max_Keys, _Pos) ->
+-spec insert_keys(key(), key(), key(), any(), any(), any(), tree(), integer()) -> tree()|{tree(), tree(), {key(), any()}}.
+insert_keys(K1, K2, K3, V1, V2, V3, [{?EMPTY_KEY, ?EMPTY_VALUE, Child}]=_Node, _Pos) ->
 	% go into rightmost child
-	NewChild = insert_keys(K1, K2, K3, V1, V2, V3, Child, Max_Keys, 1),
+	NewChild = insert_keys(K1, K2, K3, V1, V2, V3, Child, 1),
 	case NewChild of
 		%% adding keys to the child resulted in splitting
 		{Node1, Node2, NewKey, NewValue} ->
-			[{NewKey, NewValue, Node1}, {-1, ok, Node2}];
+			[{NewKey, NewValue, Node1}, {?EMPTY_KEY, ?EMPTY_VALUE, Node2}];
 		_ ->
-			[{-1, ok, NewChild}]
+			[{?EMPTY_KEY, ?EMPTY_VALUE, NewChild}]
 	end;
-insert_keys({Min, _} = K1, K2, K3, V1, V2, V3, [{{OldMin, OldMax} = OldKey, Value, Child}|Rest]=_Node, Max_Keys, Pos) ->
-	if 
+insert_keys(K1, K2, K3, V1, V2, V3, [{{OldMin, OldMax} = OldKey, Value, Child}|Rest]=_Node, Pos) ->
+	case K1 of 
 		% we found the shard that was splitted and replace it by the new shards
 		% also we are in a leaf, so we just add these two to the leaf
 		% last condition makes sure to split only when in the leftmost key
 		% this case matches only when inserting into the root
-		Min == OldMin andalso Child == ?EMPTY_NODE andalso Pos == 1 ->
-			try_split([{K1, V1, ?EMPTY_NODE}, {K2, V2, ?EMPTY_NODE}, {K3, V3, ?EMPTY_NODE}] ++ Rest, Max_Keys);
-		Min == OldMin andalso Child == ?EMPTY_NODE ->
+		{OldMin, _Max} when Child == ?EMPTY_NODE andalso Pos == 1 ->
+			try_split([{K1, V1, ?EMPTY_NODE}, {K2, V2, ?EMPTY_NODE}, {K3, V3, ?EMPTY_NODE}] ++ Rest);
+		{OldMin, _Max} when Child == ?EMPTY_NODE andalso Pos > 1 ->
 			[{K1, V1, ?EMPTY_NODE}, {K2, V2, ?EMPTY_NODE}, {K3, V3, ?EMPTY_NODE}] ++ Rest;
 		% we found the shard that was splitted and replace it by the two new shards
 		% also we are not in a leaf, so send the smaller new shard to the node left to the key
-		Min == OldMin andalso Child /= ?EMPTY_NODE ->
-			NewChild = insert_rest(K1, K2, V1, V2, Child, Max_Keys),
+		{OldMin, _Max} when Child /= ?EMPTY_NODE ->
+			NewChild = insert_rest(K1, K2, V1, V2, Child),
 			case NewChild of
 				%% adding one key to the child resulted in splitting
 				{Node1, Node2, NewKey, NewValue} ->
-					try_split([{NewKey, NewValue, Node1}, {K3, V3, Node2}] ++ Rest, Max_Keys);
+					try_split([{NewKey, NewValue, Node1}, {K3, V3, Node2}] ++ Rest);
 				_ ->
-					try_split([{K3, V3, NewChild}] ++ Rest, Max_Keys)
+					try_split([{K3, V3, NewChild}] ++ Rest)
 			end;			
 		% go into left child if smaller. Atom min denotes a value smaller than all other values, thus the additional condition, similar for Atom max
 		% there is a child, because otherwise Max2 could not be inferior to OldMin
-		(Min < OldMin andalso OldMin /= min) orelse Min == min  ->
-			NewChild = insert_keys(K1, K2, K3, V1, V2, V3, Child, Max_Keys, 1),
+		{Min, _Max} when (Min < OldMin andalso OldMin /= min) orelse Min == min  ->
+			NewChild = insert_keys(K1, K2, K3, V1, V2, V3, Child, 1),
 			case NewChild of
 				{Node1, Node2, NewKey, NewValue} ->
-					try_split([{NewKey, NewValue, Node1}, {OldKey, Value, Node2}] ++ Rest, Max_Keys);
+					try_split([{NewKey, NewValue, Node1}, {OldKey, Value, Node2}] ++ Rest);
 				_ ->
-					try_split([{OldKey, Value, NewChild}] ++ Rest, Max_Keys)
+					try_split([{OldKey, Value, NewChild}] ++ Rest)
 			end;
 		% larger than the current key, go one key to the right
-		(OldMax =< Min orelse OldMin == min) andalso Child == ?EMPTY_NODE ->
-			if 
-				Pos == 1 ->
-					try_split([{OldKey, Value, Child}] ++ insert_keys(K1, K2, K3, V1, V2, V3, Rest, Max_Keys, Pos + 1), Max_Keys);
-				true ->
-					[{OldKey, Value, Child}] ++ insert_keys(K1, K2, K3, V1, V2, V3, Rest, Max_Keys, Pos + 1)
+		{Min, _Max} when (OldMax =< Min orelse OldMin == min) andalso Child == ?EMPTY_NODE ->
+			case Pos of
+				1 ->
+					try_split([{OldKey, Value, Child}] ++ insert_keys(K1, K2, K3, V1, V2, V3, Rest, Pos + 1));
+				_ ->
+					[{OldKey, Value, Child}] ++ insert_keys(K1, K2, K3, V1, V2, V3, Rest, Pos + 1)
 			end;			
-		OldMax =< Min orelse OldMin == min ->
-			try_split([{OldKey, Value, Child}] ++ insert_keys(K1, K2, K3, V1, V2, V3, Rest, Max_Keys, Pos + 1), Max_Keys) 
+		{Min, _Max} when (OldMax =< Min orelse OldMin == min) andalso Child /= ?EMPTY_NODE ->
+			try_split([{OldKey, Value, Child}] ++ insert_keys(K1, K2, K3, V1, V2, V3, Rest, Pos + 1)) 
 	end.
 
--spec try_split(treenode(), integer())-> treenode()|{treenode(), treenode(), key(), any()}.
-try_split(Node, Max_Keys)->
-	Length = length(Node),
-	if 
-		Length > Max_Keys + 1 ->
+-spec try_split(tree())-> tree()|{tree(), tree(), key(), any()}.
+try_split(Node)->
+	case length(Node) of
+		Length when Length > ?MAX_KEYS + 1 ->
 			% split
 			Half = Length div 2,
 			{Key, Value, Temp} = lists:nth(Half + 1, Node),
-			Node1 = lists:sublist(Node, Half)++[{-1, ok, Temp}],
+			Node1 = lists:sublist(Node, Half)++[{?EMPTY_KEY, ?EMPTY_VALUE, Temp}],
 			Node2 = lists:sublist(Node, Half + 2, Half),
 			{Node1, Node2, Key, Value};
-		true ->
+		Length when Length =< ?MAX_KEYS + 1 ->
 			Node
 	end.
 
--spec insert_rest(key(), key(), any(), any(), treenode(), integer()) -> treenode()|{treenode(), treenode(), {key(), any()}}.
-insert_rest(K1, K2, V1, V2, {-1, ok, ?EMPTY_NODE}, _Max_Keys) ->
-	[{K1, V1, ?EMPTY_NODE}, {K2, V2, ?EMPTY_NODE}, {-1, ok, ?EMPTY_NODE}];
-insert_rest(K1, K2, V1, V2, {-1, ok, Child}, Max_Keys) ->
+-spec insert_rest(key(), key(), any(), any(), tree()) -> tree()|{tree(), tree(), {key(), any()}}.
+insert_rest(K1, K2, V1, V2, {?EMPTY_KEY, ?EMPTY_VALUE, ?EMPTY_NODE}) ->
+	[{K1, V1, ?EMPTY_NODE}, {K2, V2, ?EMPTY_NODE}, {?EMPTY_KEY, ?EMPTY_VALUE, ?EMPTY_NODE}];
+insert_rest(K1, K2, V1, V2, {?EMPTY_KEY, ?EMPTY_VALUE, Child}) ->
 	% go into rightmost child
-	NewChild = insert_rest(K1, K2, V1, V2, Child, Max_Keys),
+	NewChild = insert_rest(K1, K2, V1, V2, Child),
 	case NewChild of
 		%% adding keys to the child resulted in splitting
 		{Node1, Node2, NewKey, NewValue} ->
-			[{NewKey, NewValue, Node1},{-1, ok, Node2}];
+			[{NewKey, NewValue, Node1},{?EMPTY_KEY, ?EMPTY_VALUE, Node2}];
 		_ ->
-			[{-1, ok, NewChild}]
+			[{?EMPTY_KEY, ?EMPTY_VALUE, NewChild}]
 	end;
-insert_rest(K1, K2, V1, V2, Node, Max_Keys) ->
+insert_rest(K1, K2, V1, V2, Node) ->
 	Last = lists:last(Node),
 	New = lists:droplast(Node),
-	try_split(New ++ insert_rest(K1, K2, V1, V2, Last, Max_Keys), Max_Keys).
+	try_split(New ++ insert_rest(K1, K2, V1, V2, Last)).
 
 -spec get_all(tree()) -> [{key(), any()}].
-get_all({_Max_Keys, Root}=_Tree) ->
-	get_all_helper(Root).
--spec get_all_helper(treenode()) -> [{key(), any()}].
-get_all_helper(?EMPTY_NODE) ->
+get_all(?EMPTY_NODE) ->
 	[];
-get_all_helper([{-1, ok, Child}]) ->
-	get_all_helper(Child);
-get_all_helper([{Key, NodeV, Child}|Rest]) ->
-	get_all_helper(Child) ++ [{Key, NodeV}] ++ get_all_helper(Rest).
+get_all([{?EMPTY_KEY, ?EMPTY_VALUE, Child}]) ->
+	get_all(Child);
+get_all([{Key, NodeV, Child}|Rest]) ->
+	get_all(Child) ++ [{Key, NodeV}] ++ get_all(Rest).
 			
 %% @doc Find the right shard for a given key
 %% Shards are stored in leaves, so we go down the tree until we end up in a leaf
 %%
 -spec get_key(integer(), tree()) -> {key(), any()}.
-get_key(Elem, {_Max_Keys, Root} = _Tree)->
-		get_key_helper(Elem, Root).
--spec get_key_helper(integer(), treenode()) -> {key(), any()}.
-get_key_helper(Elem, [{-1, ok, Child}])->
-	get_key_helper(Elem, Child);
-get_key_helper(Elem, [{{Min, Max}, NodeV, Child}|Rest] = _Node)->
+get_key(Elem, [{?EMPTY_KEY, ?EMPTY_VALUE, Child}])->
+	get_key(Elem, Child);
+get_key(Elem, [{{Min, Max}, NodeV, Child}|Rest] = _Node)->
 	if 
 		Elem < Min andalso Min /= min ->
-			get_key_helper(Elem, Child);
+			get_key(Elem, Child);
 		% Max is in the next shard
 		Elem >= Max andalso Max /= max->
-			get_key_helper(Elem, Rest);
+			get_key(Elem, Rest);
 		true ->
 			{{Min, Max}, NodeV}
 	end.
 
 -spec get_key_left(integer(), tree()) -> {key(), any()}.
-get_key_left(Elem, {_Max_Keys, Root} = _Tree)->
-	get_key_left_helper(Elem, Root).
--spec get_key_left_helper(integer(), treenode()) -> {key(), any()}.
-get_key_left_helper(Elem, [{-1, ok, Child}])->
-	case get_key_left_helper(Elem, Child) of
-		ok ->
+get_key_left(Elem, [{?EMPTY_KEY, ?EMPTY_VALUE, Child}])->
+	case get_key_left(Elem, Child) of
+		?EMPTY_VALUE ->
 			left;
 		Return ->
 			Return
 	end;
-get_key_left_helper(Elem, [{{Min, Max}, NodeV, Child}|Rest] = _Node)->
+get_key_left(Elem, [{{Min, Max}, NodeV, Child}|Rest] = _Node)->
 	if 
 		(Elem < Min orelse Elem == min) andalso Min /= min ->
-			case get_key_left_helper(Elem, Child) of
-				ok ->
+			case get_key_left(Elem, Child) of
+				?EMPTY_VALUE ->
 					left;
 				Return ->
 					Return
 			end;
 		(Elem >= Max andalso Max /= max andalso Elem /= min) orelse (Min == min andalso Elem /= min) ->
-			case get_key_left_helper(Elem, Rest) of
+			case get_key_left(Elem, Rest) of
 				left ->
 					{{Min, Max}, NodeV};
-				ok ->
+				?EMPTY_VALUE ->
 					{{Min, Max}, NodeV};
 				Return ->
 					Return
 			end;
 		true ->
-			if 
+			case Child of 
 				% last call is the searched one
-				Child == ?EMPTY_NODE ->
-					ok;
-				true ->
+				?EMPTY_NODE ->
+					?EMPTY_VALUE;
+				[_V | _Rest] ->
 					get_left(Child)
 			end			 
 	end.
@@ -189,15 +177,12 @@ get_key_left_helper(Elem, [{{Min, Max}, NodeV, Child}|Rest] = _Node)->
 %% Shards are stored in leaves, so we go down the tree until we end up in a leaf
 %%
 -spec get_key_right(integer(), tree()) -> {key(), any()}.
-get_key_right(Elem, {_Max_Keys, Root} = _Tree)->
-	get_key_right_helper(Elem, Root).
--spec get_key_right_helper(integer(), treenode()) -> {key(), any()}.
-get_key_right_helper(Elem, [{-1, ok, Child}])->
-	get_key_right_helper(Elem, Child);
-get_key_right_helper(Elem, [{{Min, Max}, NodeV, Child}|Rest] = _Node)->
+get_key_right(Elem, [{?EMPTY_KEY, ?EMPTY_VALUE, Child}])->
+	get_key_right(Elem, Child);
+get_key_right(Elem, [{{Min, Max}, NodeV, Child}|Rest] = _Node)->
 	if 
 		(Elem < Min orelse Elem == min) andalso Min /= min ->
-			case get_key_right_helper(Elem, Child) of
+			case get_key_right(Elem, Child) of
 				parent ->
 					{{Min, Max}, NodeV};
 				Result ->
@@ -205,18 +190,18 @@ get_key_right_helper(Elem, [{{Min, Max}, NodeV, Child}|Rest] = _Node)->
 			end;
 		% Max is in the next shard
 		(Elem >= Max andalso Max /= max andalso Elem /= min) orelse (Min == min andalso Elem /= min) ->
-			get_key_right_helper(Elem, Rest);
+			get_key_right(Elem, Rest);
 		true ->
-			if 
-				Child == ?EMPTY_NODE ->
+			case Child of 
+				?EMPTY_NODE ->
 					[{Key, Value, _}|_] = Rest,
-					if 
-						Key == -1 ->
+					case Key of 
+						?EMPTY_KEY ->
 							parent;
-						true ->
+						_Value ->
 							{Key, Value}
 					end;
-				true ->
+				[_V | _Rest] ->
 					[{_, _, Next_Child}|_] = Rest,
 					get_right(Next_Child)
 			end
@@ -225,57 +210,52 @@ get_key_right_helper(Elem, [{{Min, Max}, NodeV, Child}|Rest] = _Node)->
 %% @doc Replace a key and value in the tree
 %%
 -spec replace(key(), key(), any(), tree()) -> tree().
-replace(K, NewKey, NewV, {Max_Keys, Root} = _Tree) ->
-	{Max_Keys, replace_helper(K, NewKey, NewV, Root)}.
--spec replace_helper(key(), key(), any(), any()) -> tree().
-replace_helper(K, NewKey, NewV, [{-1, ok, Child}]) ->
-	[{-1, ok, replace_helper(K, NewKey, NewV, Child)}];
-replace_helper({KeyMin, KeyMax}= K, NewKey, NewV, [{{OldMin, OldMax}, NodeV, Child}|Rest]=_Node) ->
+replace(K, NewKey, NewV, [{?EMPTY_KEY, ?EMPTY_VALUE, Child}]) ->
+	[{?EMPTY_KEY, ?EMPTY_VALUE, replace(K, NewKey, NewV, Child)}];
+replace({KeyMin, KeyMax}= K, NewKey, NewV, [{{OldMin, OldMax}, NodeV, Child}|Rest]=_Node) ->
 	if 
 		KeyMin == OldMin andalso KeyMax == OldMax ->
 			[{NewKey, NewV, Child}|Rest];
 		(KeyMin < OldMin andalso OldMin /= min) orelse KeyMin == min ->
-			[{{OldMin, OldMax}, NodeV, replace_helper(K, NewKey, NewV, Child)}|Rest];
+			[{{OldMin, OldMax}, NodeV, replace(K, NewKey, NewV, Child)}|Rest];
 		true ->
-			[{{OldMin, OldMax}, NodeV, Child}] ++ replace_helper(K, NewKey, NewV, Rest)
+			[{{OldMin, OldMax}, NodeV, Child}] ++ replace(K, NewKey, NewV, Rest)
 	end.
 
 -spec remove(key(), tree()) -> tree().
-remove(K, {Max_Keys, Root} = _Tree) ->
-	Rem = remove(K, Root, 1 + Max_Keys / 2, 1),
+remove(K, Tree) ->
+	Rem = remove(K, Tree, 1),
 	case Rem of
-		{rotate, [{-1, ok, Rem_Rest}]} -> 
-			{Max_Keys, Rem_Rest};
+		{rotate, [{?EMPTY_KEY, ?EMPTY_VALUE, Rem_Rest}]} -> 
+			Rem_Rest;
 		{rotate, Rem_Rest} -> 
-			{Max_Keys, Rem_Rest};
+			Rem_Rest;
 		Rem_Rest ->
-			{Max_Keys, Rem_Rest}
+			Rem_Rest
 	end.
--spec remove(key(), treenode(), integer(), integer()) -> tree().
-remove({KeyMin, KeyMax} = K, [{{OldMin, OldMax}, V, Child}, {Next_K, Next_V, Next_Child} = Next|Rest]=Node, Min_Keys, Pos) ->
-	if 
-		K == {OldMin, OldMax} andalso Child == ?EMPTY_NODE ->
-			Key_Count = length(Node) + Pos - 1,
-			if 
-				Key_Count > Min_Keys ->
+-spec remove(key(), tree(), integer()) -> tree().
+remove(K, [{{OldMin, OldMax}, V, Child}, {Next_K, Next_V, Next_Child} = Next|Rest]=Node, Pos) ->
+	case K of 
+		{OldMin, OldMax} when Child == ?EMPTY_NODE ->
+			case  length(Node) + Pos - 1 of
+				Key_Count when Key_Count > ?MIN_KEYS ->
 					[Next|Rest];
-				true ->
+				Key_Count when Key_Count =< ?MIN_KEYS ->
 					%% rotate or merge
 					{rotate, [Next|Rest]}
 			end;
-		K == {OldMin, OldMax} andalso Child /= ?EMPTY_NODE ->
+		{OldMin, OldMax} when Child /= ?EMPTY_NODE ->
 			%% first get the next key to the current position, then delete it in leaf
 			{Succ_In_Child_K, Succ_In_Child_V} = get_left(Child),
-			Rem = remove(Succ_In_Child_K, Child, Min_Keys, 1),
+			Rem = remove(Succ_In_Child_K, Child, 1),
 			case Rem of 
 				{rotate, Rem_Rest} ->
-					case try_rotate(Rem_Rest, Next_Child, Succ_In_Child_K, Succ_In_Child_V, Min_Keys) of
+					case try_rotate(Rem_Rest, Next_Child, Succ_In_Child_K, Succ_In_Child_V) of
 						merge ->
-							Key_Count = length(Node) + Pos - 1,
-							if 
-								Key_Count > Min_Keys ->
+							case length(Node) + Pos - 1 of
+								Key_Count when Key_Count > ?MIN_KEYS ->
 									[{Next_K, Next_V, merge(Rem_Rest, Next_Child, Succ_In_Child_K, Succ_In_Child_V)}|Rest];
-								true ->
+								Key_Count when Key_Count =< ?MIN_KEYS ->
 									%% rotate or merge
 									{rotate, [{Next_K, Next_V, merge(Rem_Rest, Next_Child, Succ_In_Child_K, Succ_In_Child_V)}|Rest]}
 							end;
@@ -285,17 +265,16 @@ remove({KeyMin, KeyMax} = K, [{{OldMin, OldMax}, V, Child}, {Next_K, Next_V, Nex
 				Rem_Rest ->
 					[{Succ_In_Child_K, Succ_In_Child_V, Rem_Rest}, Next] ++ Rest
 			end;
-		(KeyMin =< OldMin andalso OldMin /= min) orelse KeyMin == min ->
-			Rem = remove(K, Child, Min_Keys, 1),
+		{KeyMin, _KeyMax} when (KeyMin =< OldMin andalso OldMin /= min) orelse KeyMin == min ->
+			Rem = remove(K, Child, 1),
 			case Rem of 
 				{rotate, Rem_Rest} ->
-					case try_rotate(Rem_Rest, Next_Child, {OldMin, OldMax}, V, Min_Keys) of
+					case try_rotate(Rem_Rest, Next_Child, {OldMin, OldMax}, V) of
 						merge ->
-							Key_Count = length(Node) + Pos - 1,
-							if 
-								Key_Count > Min_Keys ->
+							case  length(Node) + Pos - 1 of
+								Key_Count when Key_Count > ?MIN_KEYS ->
 									[{Next_K, Next_V, merge(Rem_Rest, Next_Child, {OldMin, OldMax}, V)}|Rest];
-								true ->
+								Key_Count when Key_Count =< ?MIN_KEYS ->
 									%% rotate or merge
 									{rotate, [{Next_K, Next_V, merge(Rem_Rest, Next_Child, {OldMin, OldMax}, V)}|Rest]}
 							end;
@@ -305,31 +284,30 @@ remove({KeyMin, KeyMax} = K, [{{OldMin, OldMax}, V, Child}, {Next_K, Next_V, Nex
 				Rem_Rest ->
 					[{{OldMin, OldMax}, V, Rem_Rest}, Next] ++ Rest
 			end;
-		KeyMax > OldMax orelse KeyMax == max ->
+		{_KeyMin, KeyMax} when KeyMax > OldMax orelse KeyMax == max ->
 			case Next of
-				{-1, ok, Next_Child} ->
-					Rem = remove(K, Next_Child, Min_Keys, 1),
+				{?EMPTY_KEY, ?EMPTY_VALUE, Next_Child} ->
+					Rem = remove(K, Next_Child, 1),
 					case Rem of 
 						{rotate, Rem_Rest} ->
 							%% rotate the other way because there is no right neighbour
-							case try_rotate2(Child, Rem_Rest, {OldMin, OldMax}, V, Min_Keys) of
+							case try_rotate2(Child, Rem_Rest, {OldMin, OldMax}, V) of
 								merge ->
-									Key_Count = length(Node) + Pos - 1,
-									if 
-										Key_Count > Min_Keys ->
-											[{-1, ok, merge(Child, Rem_Rest, {OldMin, OldMax}, V)}];
-										true ->
+									case length(Node) + Pos - 1 of
+										Key_Count when Key_Count > ?MIN_KEYS ->
+											[{?EMPTY_KEY, ?EMPTY_VALUE, merge(Child, Rem_Rest, {OldMin, OldMax}, V)}];
+										Key_Count when Key_Count =< ?MIN_KEYS ->
 											%% rotate or merge
-											{rotate, [{-1, ok, merge(Child, Rem_Rest, {OldMin, OldMax}, V)}]}
+											{rotate, [{?EMPTY_KEY, ?EMPTY_VALUE, merge(Child, Rem_Rest, {OldMin, OldMax}, V)}]}
 									end;	
 								{ChildA, ChildB, New_K, New_V} ->
-									[{New_K, New_V, ChildA}, {-1, ok, ChildB}]
+									[{New_K, New_V, ChildA}, {?EMPTY_KEY, ?EMPTY_VALUE, ChildB}]
 							end;
 						Rem_Rest ->
-							[{{OldMin, OldMax}, V, Child}, {-1, ok, Rem_Rest}]
+							[{{OldMin, OldMax}, V, Child}, {?EMPTY_KEY, ?EMPTY_VALUE, Rem_Rest}]
 					end;
 				_ ->
-					Rem = remove(K, [Next|Rest], Min_Keys, Pos + 1),
+					Rem = remove(K, [Next|Rest], Pos + 1),
 					case Rem of 
 						%% hand over the rotate information to the left
 						{rotate, Rem_Rest} ->
@@ -340,37 +318,35 @@ remove({KeyMin, KeyMax} = K, [{{OldMin, OldMax}, V, Child}, {Next_K, Next_V, Nex
 			end
 	end.
 
--spec merge(treenode(), treenode(), key(), any()) -> treenode().
+-spec merge(tree(), tree(), key(), any()) -> tree().
 merge(ChildA, ChildB, K2, V2) ->
-	{-1, ok, Child} = lists:last(ChildA),
+	{?EMPTY_KEY, ?EMPTY_VALUE, Child} = lists:last(ChildA),
 	lists:droplast(ChildA) ++ [{K2, V2, Child}] ++ ChildB.
 
--spec try_rotate2(treenode(), treenode(), key(), any(), integer()) -> {treenode(), treenode(), key(), any()}|atom().
-try_rotate2(ChildA, ChildB, K2, V2, Min_Keys) ->
-	Length = length(ChildA),
-	if 
-		Length < Min_Keys + 0.5 ->
+-spec try_rotate2(tree(), tree(), key(), any()) -> {tree(), tree(), key(), any()}|atom().
+try_rotate2(ChildA, ChildB, K2, V2) ->
+	case length(ChildA) of
+		Length when Length < ?MIN_KEYS + 0.5 ->
 			merge;
-		true ->
+		Length when Length >= ?MIN_KEYS + 0.5 ->
 			{K, V, Node} = lists:nth(Length-1, ChildA),
-			{-1, ok, Node2} = lists:last(ChildA),
+			{?EMPTY_KEY, ?EMPTY_VALUE, Node2} = lists:last(ChildA),
 			NewA = lists:droplast(lists:droplast(ChildA)),
-			{NewA ++ [{-1, ok, Node}], [{K2, V2, Node2}] ++ ChildB, K, V}
+			{NewA ++ [{?EMPTY_KEY, ?EMPTY_VALUE, Node}], [{K2, V2, Node2}] ++ ChildB, K, V}
 	end.
 
--spec try_rotate(treenode(), treenode(), key(), any(), integer()) -> {treenode(), treenode(), key(), any()}|atom().
-try_rotate(ChildA, [{K, V, Node}|Rest]=ChildB, K2, V2, Min_Keys) ->
-	Length = length(ChildB),
-	if 
-		Length < Min_Keys + 0.5 ->
+-spec try_rotate(tree(), tree(), key(), any()) -> {tree(), tree(), key(), any()}|atom().
+try_rotate(ChildA, [{K, V, Node}|Rest]=ChildB, K2, V2) ->
+	case length(ChildB) of 
+		Length when Length < ?MIN_KEYS + 0.5 ->
 			merge;
-		true ->
-			{-1, ok, Child} = lists:last(ChildA),
+		Length when Length >= ?MIN_KEYS + 0.5 ->
+			{?EMPTY_KEY, ?EMPTY_VALUE, Child} = lists:last(ChildA),
 			NewA = lists:droplast(ChildA),
-			{NewA ++ [{K2, V2, Child}] ++ [{-1, ok, Node}], Rest, K, V}
+			{NewA ++ [{K2, V2, Child}] ++ [{?EMPTY_KEY, ?EMPTY_VALUE, Node}], Rest, K, V}
 	end.
 
--spec get_left(treenode()) -> {key(), any()}.
+-spec get_left(tree()) -> {key(), any()}.
 get_left([{_K, _V, ?EMPTY_NODE}|_Rest]= Node) ->
 	Pos = length(Node),
 	{K, V, ?EMPTY_NODE} = lists:nth(Pos-1, Node),
@@ -379,48 +355,8 @@ get_left(Node) ->
 	{_K, _V, Right} = lists:last(Node),
 	get_left(Right).
 
--spec get_right(treenode()) -> {key(), any()}.
+-spec get_right(tree()) -> {key(), any()}.
 get_right([{K, V, ?EMPTY_NODE}|_]) ->
 	{K, V};
 get_right([{_K, _V, Head}|_]) ->
 	get_right(Head).
-
--ifdef(TEST).
-remove_helper(Tree, []) ->
-	Tree;
-remove_helper(Tree, [K1|Rest]) ->
-	remove_helper(remove(K1, Tree), Rest).
-
-insert_helper(Tree, []) ->
-	Tree;
-insert_helper(Tree, [K1, K2, K3|Rest]) ->
-	insert_helper(insert_three(K1, K2, K3, "haii", "haii", "haii", Tree), Rest).
-
-add_test()->
-	Tree = init(3, "haii"),
-	List = [{min, 27}, {27,54}, {54,max},
-			{min, 9}, {9,18}, {18,27},
-			{min, 3}, {3,6}, {6,9},
-			{min, 1}, {1,2}, {2,3},
-			{3, 4}, {4,5}, {5,6},
-			{6, 7}, {7,8}, {8,9},
-			{9, 12}, {12,15}, {15,18},
-			{9, 10}, {10,11}, {11,12},
-			{12, 13}, {13,14}, {14,15},
-			{15, 16}, {16,17}, {17,18}
-		   ],
-	List2 = [{27,54}, {54,max},
-			{min, 1}, {1,2}, {2,3},
-			{3, 4}, {4,5}, {5,6},
-			{6, 7}, {7,8}, {8,9},
-			{18,27},
-			{9, 10}, {10,11}, {11,12},
-			{12, 13}, {13,14}, {14,15},
-			{15, 16}, {16,17}, {17,18}
-			],
-	Tree2 = insert_helper(Tree, List),
-	Tree3 = remove_helper(Tree2, List2),
-	Tree3 = {3, ?EMPTY_NODE}.
-	
--endif.
-
