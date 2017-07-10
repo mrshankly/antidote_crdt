@@ -64,11 +64,11 @@ remove_tokens([Head|Rest1]=CurrentTokens, [{Key2, Counter2}|Rest2]=VV) ->
 		{Key1, _Counter1} when Key1 > Key2 -> 
 			remove_tokens(CurrentTokens, Rest2);
 		{Key1, Counter1} when Key1 < Key2 ->
-			[Key1, Counter1] ++ remove_tokens(Rest1, VV);
+			[{Key1, Counter1}] ++ remove_tokens(Rest1, VV);
 		{_Key1, Counter1} when Counter2 >= Counter1 ->
 			remove_tokens(Rest1, Rest2);
 		{Key1, Counter1} when Counter2 =< Counter1->
-			[Key1, Counter1] ++ remove_tokens(Rest1, Rest2)
+			[{Key1, Counter1}] ++ remove_tokens(Rest1, Rest2)
 	end.
 
 -spec merge(shard(), shard()) -> shard().
