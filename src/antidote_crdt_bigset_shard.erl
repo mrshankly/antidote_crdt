@@ -1,5 +1,4 @@
-%% @author Luehk
-%% @doc @todo Add description to antidote_crdt_bigset_shard.
+%% @author Luc Francois (francois.luc93@gmail.com)
 
 -module(antidote_crdt_bigset_shard).  
   
@@ -30,13 +29,13 @@ update_shard(Op, Shard) ->
 update_shard_helper({Elem, ToAdd, ToRemove}=_Op, []) ->
     apply_downstream(Elem, [], ToAdd, ToRemove);
 update_shard_helper({Elem1, ToAdd, ToRemove}=Op,  [{Elem2, CurrentTokens}|ShardRest]=Shard) ->
-    if
-        Elem1 == Elem2 ->
+    case Elem1 of
+        Elem2 ->
             apply_downstream(Elem1, CurrentTokens, ToAdd, ToRemove) ++  ShardRest;
-		Elem1 > Elem2 ->
+		Elem when Elem > Elem2 ->
             [{Elem2, CurrentTokens} | update_shard_helper(Op, ShardRest)];
-        true ->
-            apply_downstream(Elem1, [], ToAdd, ToRemove) ++ Shard
+        Elem when Elem < Elem2 ->
+            apply_downstream(Elem, [], ToAdd, ToRemove) ++ Shard
     end.
 
 %% @private create an orddict entry from a downstream op
@@ -44,10 +43,10 @@ update_shard_helper({Elem1, ToAdd, ToRemove}=Op,  [{Elem2, CurrentTokens}|ShardR
 %% remove
 apply_downstream(Elem, CurrentTokens, [], VV) ->
 	Tokens = remove_tokens(CurrentTokens, VV),
-	if 
-		Tokens == [] ->
+	case Tokens of 
+		[] ->
 			[];
-		true ->
+		_ ->
 			[{Elem, remove_tokens(CurrentTokens, VV)}]
 	end;
 %% add
@@ -59,16 +58,16 @@ remove_tokens([], _VV) ->
 	[];
 remove_tokens(CurrentTokens, []) ->
 	CurrentTokens;
-remove_tokens([{Key1, Counter1}|Rest1]=CurrentTokens, [{Key2, Counter2}|Rest2]=VV) ->
-	if
-		Key1 > Key2 -> 
+remove_tokens([Head|Rest1]=CurrentTokens, [{Key2, Counter2}|Rest2]=VV) ->
+	case Head of
+		{Key1, _Counter1} when Key1 > Key2 -> 
 			remove_tokens(CurrentTokens, Rest2);
-		Key1 < Key2 ->
-			[Key1, Counter1] ++ remove_tokens(Rest1, VV);
-		Counter2 >= Counter1 ->
+		{Key1, Counter1} when Key1 < Key2 ->
+			[{Key1, Counter1}] ++ remove_tokens(Rest1, VV);
+		{_Key1, Counter1} when Counter2 >= Counter1 ->
 			remove_tokens(Rest1, Rest2);
-		true ->
-			[Key1, Counter1] ++ remove_tokens(Rest1, Rest2)
+		{Key1, Counter1} when Counter2 =< Counter1->
+			[{Key1, Counter1}] ++ remove_tokens(Rest1, Rest2)
 	end.
 
 -spec merge(shard(), shard()) -> shard().
@@ -77,7 +76,7 @@ merge(Shard1, Shard2) ->
         V1
     end,
 	orddict:merge(Fun, Shard1, Shard2).
-		
+
 -spec split(shard(), key()) -> {shard(), shard(), shard()}.
 split(Shard, {Min, Max} = _Key) ->
 	Third = orddict:size(Shard) div 3,

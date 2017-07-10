@@ -2,10 +2,9 @@
 -module(antidote_crdt_bigset).
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl"). 
-%-include_lib("C:/Users/Luehk/workspace/Bigset/include/eunit/include/eunit.hrl"). 
 -endif. 
 -include("antidote_crdt.hrl").
-%-include("C:/Users/Luehk/workspace/Bigset/include/antidote_crdt.hrl"). 
+
 
 %% Callbacks
 -export([ new/0,
@@ -23,6 +22,12 @@
 		  add_tokens/2,
           is_bottom/1
         ]).
+
+-define(MAX_COUNT, 350).
+-define(MIN_COUNT, ?MAX_COUNT div 4).
+-define(MIN_SIBLING, ?MAX_COUNT div 2).
+-define(ZERO_REFS, 0).
+-define(SHARD_POS, 3).
 
 -behaviour(antidote_crdt).
 
@@ -52,14 +57,8 @@
 -type token() :: binary().
 -type tokens() :: [token()].
 	
-%% Hash_Exponent bust be between 0 and 32
 -spec new() -> bigset().
 new() ->
-	new(350).
-
-%% Hash_Exponent bust be between 0 and 32
--spec new(integer()) -> bigset().
-new(Max_Count) ->
 	Table = ets:new(erlang:binary_to_atom(unique(), latin1), [set, public, named_table, {keypos,1}, {heir,none}, {write_concurrency,false}, 
 		{read_concurrency,true}]),
 	Time = erlang:system_time(),
@@ -67,18 +66,18 @@ new(Max_Count) ->
 	ID = unique(),
 	ets:insert(Table, {"LastGC", 0}),
 	ets:insert(Table, {{{min, max}, {Value, Time}}, 0, antidote_crdt_bigset_shard : new()}),
-	{big, Max_Count, antidote_crdt_bigset_keytree : init(3, {Value, Time}), Table, ID, [{ID,0}]}.
+	{big, antidote_crdt_bigset_keytree : init({Value, Time}), Table, ID, [{ID,0}]}.
 
 %% @doc return all existing elements in the bigset
 -spec value(bigset()) -> [elem()].
-value({_Big, _Max_Count, Tree, Table, _ID, _VV}=_BigSet) ->
+value({_Big, Tree, Table, _ID, _VV}=_BigSet) ->
     lists:usort(value_helper(antidote_crdt_bigset_keytree : get_all(Tree), Table)).
 	
 -spec value_helper([integer()], atom()) -> [elem()].
 value_helper([Key|Rest], Table) ->
 	case Rest of
         [] ->
-			Shard = ets:lookup_element(Table, Key, 3),
+			Shard = ets:lookup_element(Table, Key, ?SHARD_POS),
 			if 
 				Shard == [] -> 
 					[];
@@ -86,7 +85,7 @@ value_helper([Key|Rest], Table) ->
 					orddict:fetch_keys(Shard)
 			end;
         _ ->
-			Shard = ets:lookup_element(Table, Key, 3),
+			Shard = ets:lookup_element(Table, Key, ?SHARD_POS),
 			if 
 				Shard == [] -> 
 					[] ++ value_helper(Rest, Table);
@@ -97,9 +96,9 @@ value_helper([Key|Rest], Table) ->
 
 %% @doc return true if the bigset contains the element
 -spec contains(elem(), bigset()) -> boolean().
-contains(Elem, {_Big, _Max_Count, Tree, Table, _ID, _VV} = _BigSet) ->
+contains(Elem, {_Big, Tree, Table, _ID, _VV} = _BigSet) ->
 	TableKey = antidote_crdt_bigset_keytree : get_key(Elem, Tree),
-	orddict : is_key(Elem, ets:lookup_element(Table, TableKey, 3)). 
+	orddict : is_key(Elem, ets:lookup_element(Table, TableKey, ?SHARD_POS)). 
 
 %% @doc compares two bigsets, yields "true" if they contain the same elements
 %% The bigsets may differ in number of shards, so we can't compare them shard by shard
@@ -121,7 +120,6 @@ equal_content([First|Rest], ContentB) ->
 	lists : member(First, ContentB) andalso equal_content(Rest, lists : delete(First, ContentB)).
 
 -include("riak_dt_tags.hrl").
-%-include("C:/Users/Luehk/workspace/Bigset/include/riak_dt_tags.hrl"). 
 -define(TAG, ?DT_BIGSET_TAG).
 -define(V1_VERS, 1).
 
@@ -168,7 +166,7 @@ downstream({reset, {}}, BigSet) ->
 - spec create_downstreams(any(), [elem()], bigset(), downstream_op()) -> downstream_op().
 create_downstreams(_CreateDownstream, [], _BigSet, DownstreamOps) ->
     DownstreamOps;
-create_downstreams(CreateDownstream, [Elem|ElemsRest], {_Big, _Max_Count, _Tree, _Table, ID, VV} = BigSet, DownstreamOps) ->
+create_downstreams(CreateDownstream, [Elem|ElemsRest], {_Big, _Tree, _Table, ID, VV} = BigSet, DownstreamOps) ->
 	DownstreamOp = CreateDownstream(Elem, ID, VV),
 	create_downstreams(CreateDownstream, ElemsRest, BigSet, [DownstreamOp|DownstreamOps]).
 
@@ -183,100 +181,90 @@ update(DownstreamOp, BigSet) ->
 apply_downstreams([], BigSet) ->
     BigSet;
 %% remove
-apply_downstreams([{Elem, [], _ToRemove} = Op|OpsRest], {_Big, _Max_Count, Tree, Table, _ID, _VV} = BigSet) ->
+apply_downstreams([{Elem, [], _ToRemove} = Op|OpsRest], {_Big, Tree, Table, _ID, _VV} = BigSet) ->
 	{Key, _} = TableKey = antidote_crdt_bigset_keytree : get_key(Elem, Tree),
 	[{_, Ref_Count, Shard}] = ets:lookup(Table, TableKey),
 	{ok, Shard2} = antidote_crdt_bigset_shard : update_shard(Op, Shard),
 	apply_downstreams(OpsRest, pick_action(BigSet, Shard2, TableKey, Ref_Count, Key, remove));
 %% add
-apply_downstreams([{Elem, [ID2], _ToRemove}|OpsRest], {_Big, Max_Count, Tree, Table, ID, VV} = BigSet) ->
+apply_downstreams([{Elem, [ID2], _ToRemove}|OpsRest], {_Big, Tree, Table, ID, VV} = BigSet) ->
 	VV2 = orddict : update_counter(ID2, 1, VV),
 	{Key, _} = TableKey = antidote_crdt_bigset_keytree : get_key(Elem, Tree),
 	[{_, Ref_Count, Shard}] = ets:lookup(Table, TableKey),
 	{ok, Shard2} = antidote_crdt_bigset_shard : update_shard({Elem, [ID2], VV2}, Shard),
-	{Big, Max_Count, Tree2, Table, ID, VV} = pick_action(BigSet, Shard2, TableKey, Ref_Count, Key, add),
-	apply_downstreams(OpsRest, {Big, Max_Count, Tree2, Table, ID, VV2}).
+	{Big, Tree2, Table, ID, VV} = pick_action(BigSet, Shard2, TableKey, Ref_Count, Key, add),
+	apply_downstreams(OpsRest, {Big, Tree2, Table, ID, VV2}).
 
 -spec pick_action(bigset(), antidote_crdt_bigset_shard : shard(), tablekey(), integer(), key(), atom()) -> bigset().
-pick_action({Big, Max_Count, Tree, Table, ID, VV} = BigSet, Shard, OldTableKey, Ref_Count, {Min, Max} = Key, Atom) ->
-	Size = orddict:size(Shard),
-	if 
-		Atom == remove andalso Size < Max_Count div 4 andalso {Min, Max} /= {min, max} -> 
-			if 
-				Min /= min ->
+pick_action({Big, Tree, Table, ID, VV} = BigSet, Shard, OldTableKey, Ref_Count, {Min, Max} = Key, Atom) ->
+	case orddict:size(Shard) of
+		Size when Atom == remove andalso Size < ?MIN_COUNT andalso {Min, Max} /= {min, max} ->  
+			case Min of 
+				min ->
+					{SiblingTableKey1, Sibling_Ref_Count1, Sibling1} = {ok,ok,ok},
+					SizeLeft = infinite;
+				_ ->
 					SiblingTableKey1 = antidote_crdt_bigset_keytree : get_key_left(Min, Tree),
 					[{_, Sibling_Ref_Count1, Sibling1}] = ets:lookup(Table, SiblingTableKey1),
-					SizeLeft = orddict:size(Sibling1);
-				true ->
-					{SiblingTableKey1, Sibling_Ref_Count1, Sibling1} = {ok,ok,ok},
-					SizeLeft = infinite
+					SizeLeft = orddict:size(Sibling1)
 			end,
-			if 
-				Max /= max ->
+			case Max of 
+				max ->
+					{SiblingTableKey2, Sibling_Ref_Count2, Sibling2} = {ok,ok,ok},
+					SizeRight = infinite;
+				_ ->
 					SiblingTableKey2 = antidote_crdt_bigset_keytree : get_key_right(Min, Tree),
 					[{_, Sibling_Ref_Count2, Sibling2}] = ets:lookup(Table, SiblingTableKey2),
-					SizeRight = orddict:size(Sibling2);
-				true ->
-					{SiblingTableKey2, Sibling_Ref_Count2, Sibling2} = {ok,ok,ok},
-					SizeRight = infinite
+					SizeRight = orddict:size(Sibling2)
 			end,
 			% pick smallest sibling
-			if
-				SizeRight >= SizeLeft ->
+			case SizeRight of
+				SizeRight when SizeRight >= SizeLeft ->
 					Sibling_Ref_Count = Sibling_Ref_Count1,
 					SiblingSize = SizeLeft,
 					{{SiblingMin, SiblingMax}, _} = SiblingTableKey = SiblingTableKey1,
 					Sibling = Sibling1;
-				true ->
+				SizeRight when SizeRight < SizeLeft ->
 					Sibling_Ref_Count = Sibling_Ref_Count2,
 					SiblingSize = SizeRight,
 					{{SiblingMin, SiblingMax}, _} = SiblingTableKey = SiblingTableKey2,
 					Sibling = Sibling2
 			end,
-			if
-				SiblingSize < (Max_Count div 2) ->
+			case SiblingSize of
+				SiblingSize when SiblingSize < ?MIN_SIBLING ->
 					NewKey = {min_bound(Min, SiblingMin), max_bound(Max, SiblingMax)},
 					NewShard = antidote_crdt_bigset_shard : merge(Shard, Sibling),
-					if 
+					case Ref_Count of  
 						% intermediate version, can be deleted immediately
-						Ref_Count == 0 ->
-							ets:delete(Table, OldTableKey);
-						% belongs to another snapshot, so mustn't be deleted at this point
-						true ->
-							ok
+						?ZERO_REFS ->
+							ets:delete(Table, OldTableKey)
 					end,
-					if 
+					case Sibling_Ref_Count of  
 						% intermediate version, can be deleted immediately
-						Sibling_Ref_Count == 0 ->
-							ets:delete(Table, SiblingTableKey);
-						% belongs to another snapshot, so mustn't be deleted at this point
-						true ->
-							ok
+						?ZERO_REFS ->
+							ets:delete(Table, SiblingTableKey)
 					end,
 					Time = erlang:system_time(),
 					Value = unique(),
-					ets:insert(Table, {{NewKey, {Value, Time}}, 0, NewShard}),
+					ets:insert(Table, {{NewKey, {Value, Time}}, ?ZERO_REFS, NewShard}),
 					Temp = antidote_crdt_bigset_keytree : remove(Key, Tree),		
-					{Big, Max_Count, antidote_crdt_bigset_keytree : replace({SiblingMin, SiblingMax}, 
+					{Big, antidote_crdt_bigset_keytree : replace({SiblingMin, SiblingMax}, 
 						NewKey, {Value, Time}, Temp), Table, ID, VV};
-				true ->
+				SiblingSize when SiblingSize >= ?MIN_SIBLING ->
 					remove_intermediate(BigSet, OldTableKey, Ref_Count, Shard)
 			end;		
-		Size > Max_Count ->
+		Size when Size > ?MAX_COUNT ->
 			{{K1, Lower_Shard}, {K2, Middle_Shard}, {K3, Upper_Shard}} = antidote_crdt_bigset_shard : split(Shard, Key),
 			Time = erlang:system_time(),
 			{V1, V2, V3} = {unique(), unique(), unique()},
-			if 
+			case Ref_Count of  
 				% intermediate version, can be deleted immediately
-				Ref_Count == 0 ->
-					ets:delete(Table, OldTableKey);
-				% belongs to another snapshot, so mustn't be deleted at this point
-				true ->
-					ok
+				?ZERO_REFS ->
+					ets:delete(Table, OldTableKey)
 			end,	
-			ets:insert(Table, [{{K1, {V1, Time}}, 0, Lower_Shard}, {{K2, {V2, Time}}, 0, Middle_Shard},{{K3, {V3, Time}}, 0, Upper_Shard}]),
-			{Big, Max_Count, antidote_crdt_bigset_keytree : insert_three(K1, K2, K3, {V1, Time}, {V2, Time}, {V3, Time}, Tree), Table, ID, VV};
-		true -> 
+			ets:insert(Table, [{{K1, {V1, Time}}, ?ZERO_REFS, Lower_Shard}, {{K2, {V2, Time}}, ?ZERO_REFS, Middle_Shard},{{K3, {V3, Time}}, ?ZERO_REFS, Upper_Shard}]),
+			{Big, antidote_crdt_bigset_keytree : insert_three(K1, K2, K3, {V1, Time}, {V2, Time}, {V3, Time}, Tree), Table, ID, VV};
+		_ -> 
 			remove_intermediate(BigSet, OldTableKey, Ref_Count, Shard)
 	end.
 
@@ -304,18 +292,18 @@ max_bound(A, B) ->
 
 % delete intermediate versions
 -spec remove_intermediate(bigset(), tablekey(), integer(), antidote_crdt_bigset_shard:shard()) -> bigset().
-remove_intermediate({Big, Max_Count, Tree, Table, ID, VV}=BigSet, {Key, _} = TableKey, Ref_Count, Shard)->
-	if 
+remove_intermediate({Big, Tree, Table, ID, VV}=BigSet, {Key, _} = TableKey, Ref_Count, Shard)->
+	case Ref_Count of
 		% intermediate version, can be deleted immediately
-		Ref_Count == 0 ->
-			ets:update_element(Table, TableKey, {3, Shard}),
+		?ZERO_REFS ->
+			ets:update_element(Table, TableKey, {?SHARD_POS, Shard}),
 			BigSet;
 		% belongs to another snapshot, so mustn't be deleted at this point
-		true ->
+		_ ->
 			Value = unique(),
 			Time = erlang: system_time(),
-			ets:insert(Table, {{Key, {Value, Time}}, 0, Shard}),
-			{Big, Max_Count, antidote_crdt_bigset_keytree : replace(Key, Key, {Value, Time}, Tree), Table, ID, VV}
+			ets:insert(Table, {{Key, {Value, Time}}, ?ZERO_REFS, Shard}),
+			{Big, antidote_crdt_bigset_keytree : replace(Key, Key, {Value, Time}, Tree), Table, ID, VV}
 	end.
 
 %% snapshot is deleted
@@ -325,12 +313,9 @@ remove_intermediate({Big, Max_Count, Tree, Table, ID, VV}=BigSet, {Key, _} = Tab
 remove_tokens(_Table, []) ->
 	ok;
 remove_tokens(Table, [{Key, Inc}|Rest]) ->
-	Counter = ets:update_counter(Table, Key, Inc),
-	if 
-		Counter == 0 ->
-			ets:delete(Table, Key);
-		true ->
-			ok
+	case ets:update_counter(Table, Key, Inc) of
+		?ZERO_REFS ->
+			ets:delete(Table, Key)
 	end,
 	remove_tokens(Table, Rest).
 
@@ -350,18 +335,9 @@ delete_old(Table, '$end_of_table', _LastGC)->
 delete_old(Table, "LastGC", LastGC) ->
 	delete_old(Table, ets:next(Table, "LastGC"), LastGC);
 delete_old(Table, {_Key, {_Version, Time}}=TableKey, LastGC)->
-	if
-		Time < LastGC ->
-			Ref_Count = ets:lookup_element(Table, TableKey, 2),
-			if 
-				Ref_Count == 0 ->
-					ets:delete(Table, TableKey);
-				true ->
-					ok
-			end,
-			ok;
-		true ->
-			ok
+	case {Time, ets:lookup_element(Table, TableKey, 2)} of
+		{Time, ?ZERO_REFS} when Time < LastGC ->
+			ets:delete(Table, TableKey)
 	end,
 	delete_old(Table, ets:next(Table, TableKey), LastGC).
 
@@ -397,7 +373,7 @@ is_bottom(State) -> State == new().
 %% ===================================================================
 %% EUnit tests
 %% ===================================================================
--ifdef(TEST).
+%-ifdef(TEST).
 
 new_test() ->
 	BigSet = new(),
@@ -413,7 +389,7 @@ contains_test() ->
 add_test() ->
     Elem = <<"foo">>,
     Elems = [<<"li">>, <<"manu">>],
-    Set1 = new(4),
+    Set1 = new(),
     {ok, DownstreamOp1} = downstream({add, Elem}, Set1),
     ?assertMatch([{Elem, _, _}], DownstreamOp1),
     {ok, DownstreamOp2} = downstream({add_all, Elems}, Set1),
@@ -427,7 +403,7 @@ add_test() ->
 add_much_test() ->
     Elems = [<<"a">>, <<"b">>, <<"c">>, <<"d">>, <<"e">>, <<"f">>, <<"g">>, 
 			 	<<"h">>, <<"i">>, <<"j">>, <<"k">>, <<"l">>, <<"m">>, <<"n">>, <<"o">>, <<"p">>, <<"q">>],
-    Set1 = new(4),
+    Set1 = new(),
     {ok, DownstreamOp2} = downstream({add_all, Elems}, Set1),
     ?assertMatch([{<<"a">>, _, _}, {<<"b">>, _, _}, {<<"c">>, _, _}, {<<"d">>, _, _}, {<<"e">>, _, _},
 				  {<<"f">>, _, _}, {<<"g">>, _, _}, {<<"h">>, _, _}, {<<"i">>, _, _}, {<<"j">>, _, _},
@@ -442,7 +418,7 @@ add_much_test() ->
 
 seq_test() ->
     Elems = lists: seq(1,1000),
-    Set1 = new(2),
+    Set1 = new(),
     {ok, DownstreamOp} = downstream({add_all, Elems}, Set1),
     {ok, Set2} = update(DownstreamOp, Set1),
 	{ok, DownstreamOp2} = downstream({remove_all, Elems}, Set2),
@@ -451,7 +427,7 @@ seq_test() ->
 
 add_100_test() ->
     Elems = lists: seq(1,5000),
-    Set1 = new(10),
+    Set1 = new(),
     {ok, DownstreamOp2} = downstream({add_all, Elems}, Set1),
     {ok, Set2} = update(DownstreamOp2, Set1),
     ?assertEqual(Elems, value(Set2)).
@@ -464,7 +440,7 @@ fill(N, List)->
 
 add_random_test() ->
     Elems = fill(8000, []),
-    Set1 = new(5),
+    Set1 = new(),
     {ok, DownstreamOp2} = downstream({add_all, Elems}, Set1),
     {ok, Set2} = update(DownstreamOp2, Set1),
     ?assertEqual(lists:sort(Elems), value(Set2)),
@@ -474,8 +450,8 @@ add_random_test() ->
 
 equal_test() ->
     Elems = [<<"a">>, <<"b">>, <<"c">>, <<"d">>, <<"e">>],
-    Set1 = new(4),
-	Set5 = new(4),
+    Set1 = new(),
+	Set5 = new(),
     {ok, DownstreamOp2} = downstream({add_all, Elems}, Set1),
     ?assertMatch([{<<"a">>, _, _}, {<<"b">>, _, _}, {<<"c">>, _, _}, {<<"d">>, _, _}, {<<"e">>, _, _}], lists : keysort(1,DownstreamOp2)),
 	%% Set is split in 2 shards because it has 5 elements while a maximum of 4 elements fit into one shard
