@@ -28,6 +28,7 @@
 -define(MIN_SIBLING, ?MAX_COUNT div 2).
 -define(ZERO_REFS, 0).
 -define(SHARD_POS, 3).
+-define(GC_FACTOR, 4/5).
 
 -behaviour(antidote_crdt).
 
@@ -78,18 +79,18 @@ value_helper([Key|Rest], Table) ->
 	case Rest of
         [] ->
 			Shard = ets:lookup_element(Table, Key, ?SHARD_POS),
-			if 
-				Shard == [] -> 
+			case Shard of 
+				[] -> 
 					[];
-				true ->
+				_ ->
 					orddict:fetch_keys(Shard)
 			end;
         _ ->
 			Shard = ets:lookup_element(Table, Key, ?SHARD_POS),
-			if 
-				Shard == [] -> 
+			case Shard of 
+				[] -> 
 					[] ++ value_helper(Rest, Table);
-				true ->
+				_ ->
 					orddict:fetch_keys(Shard) ++ value_helper(Rest, Table)
 			end
 	end.
@@ -195,54 +196,49 @@ apply_downstreams([{Elem, [ID2], _ToRemove}|OpsRest], {_Big, Tree, Table, ID, VV
 	{Big, Tree2, Table, ID, VV} = pick_action(BigSet, Shard2, TableKey, Ref_Count, Key, add),
 	apply_downstreams(OpsRest, {Big, Tree2, Table, ID, VV2}).
 
+-spec smallest_sibling(any(), any(), antidote_crdt_bigset_keytree:tree(), atom()) -> {antidote_crdt_bigset_shard:shard(), integer(), integer(), tablekey()}.
+smallest_sibling(min, _Max, Tree, Table)->
+	SiblingTableKey = antidote_crdt_bigset_keytree : get_key_right(min, Tree),
+	[{_, Sibling_Ref_Count, Sibling}] = ets:lookup(Table, SiblingTableKey),
+	{Sibling, orddict:size(Sibling), Sibling_Ref_Count, SiblingTableKey};
+smallest_sibling(Min, max, Tree, Table) ->
+    SiblingTableKey = antidote_crdt_bigset_keytree : get_key_left(Min, Tree),
+	[{_, Sibling_Ref_Count, Sibling}] = ets:lookup(Table, SiblingTableKey),
+	{Sibling, orddict:size(Sibling), Sibling_Ref_Count, SiblingTableKey};
+smallest_sibling(Min, _Max, Tree, Table) ->
+	SiblingTableKey1 = antidote_crdt_bigset_keytree : get_key_left(Min, Tree),
+	[{_, Sibling_Ref_Count1, Sibling1}] = ets:lookup(Table, SiblingTableKey1),
+	SizeLeft = orddict:size(Sibling1),
+	SiblingTableKey2 = antidote_crdt_bigset_keytree : get_key_right(Min, Tree),
+	[{_, Sibling_Ref_Count2, Sibling2}] = ets:lookup(Table, SiblingTableKey2),
+	SizeRight = orddict:size(Sibling2),
+	if
+		SizeRight >= SizeLeft ->
+			{Sibling2, SizeRight, Sibling_Ref_Count2, SiblingTableKey2};
+		true ->
+			{Sibling1, SizeLeft, Sibling_Ref_Count1, SiblingTableKey1}
+	end.
+
 -spec pick_action(bigset(), antidote_crdt_bigset_shard : shard(), tablekey(), integer(), key(), atom()) -> bigset().
 pick_action({Big, Tree, Table, ID, VV} = BigSet, Shard, OldTableKey, Ref_Count, {Min, Max} = Key, Atom) ->
 	case orddict:size(Shard) of
 		Size when Atom == remove andalso Size < ?MIN_COUNT andalso {Min, Max} /= {min, max} ->  
-			case Min of 
-				min ->
-					{SiblingTableKey1, Sibling_Ref_Count1, Sibling1} = {ok,ok,ok},
-					SizeLeft = infinite;
-				_ ->
-					SiblingTableKey1 = antidote_crdt_bigset_keytree : get_key_left(Min, Tree),
-					[{_, Sibling_Ref_Count1, Sibling1}] = ets:lookup(Table, SiblingTableKey1),
-					SizeLeft = orddict:size(Sibling1)
-			end,
-			case Max of 
-				max ->
-					{SiblingTableKey2, Sibling_Ref_Count2, Sibling2} = {ok,ok,ok},
-					SizeRight = infinite;
-				_ ->
-					SiblingTableKey2 = antidote_crdt_bigset_keytree : get_key_right(Min, Tree),
-					[{_, Sibling_Ref_Count2, Sibling2}] = ets:lookup(Table, SiblingTableKey2),
-					SizeRight = orddict:size(Sibling2)
-			end,
-			% pick smallest sibling
-			case SizeRight of
-				SizeRight when SizeRight >= SizeLeft ->
-					Sibling_Ref_Count = Sibling_Ref_Count1,
-					SiblingSize = SizeLeft,
-					{{SiblingMin, SiblingMax}, _} = SiblingTableKey = SiblingTableKey1,
-					Sibling = Sibling1;
-				SizeRight when SizeRight < SizeLeft ->
-					Sibling_Ref_Count = Sibling_Ref_Count2,
-					SiblingSize = SizeRight,
-					{{SiblingMin, SiblingMax}, _} = SiblingTableKey = SiblingTableKey2,
-					Sibling = Sibling2
-			end,
-			case SiblingSize of
-				SiblingSize when SiblingSize < ?MIN_SIBLING ->
+			{Sibling, SiblingSize, Sibling_Ref_Count, {{SiblingMin, SiblingMax}, _} = SiblingTableKey} = smallest_sibling(Min, Max, Tree, Table),
+			case SiblingSize of  
+				 SiblingSize when SiblingSize < ?MIN_SIBLING ->
 					NewKey = {min_bound(Min, SiblingMin), max_bound(Max, SiblingMax)},
 					NewShard = antidote_crdt_bigset_shard : merge(Shard, Sibling),
 					case Ref_Count of  
 						% intermediate version, can be deleted immediately
 						?ZERO_REFS ->
-							ets:delete(Table, OldTableKey)
+							ets:delete(Table, OldTableKey);
+						_ -> ok
 					end,
 					case Sibling_Ref_Count of  
 						% intermediate version, can be deleted immediately
 						?ZERO_REFS ->
-							ets:delete(Table, SiblingTableKey)
+							ets:delete(Table, SiblingTableKey);
+						_ -> ok
 					end,
 					Time = erlang:system_time(),
 					Value = unique(),
@@ -252,7 +248,7 @@ pick_action({Big, Tree, Table, ID, VV} = BigSet, Shard, OldTableKey, Ref_Count, 
 						NewKey, {Value, Time}, Temp), Table, ID, VV};
 				SiblingSize when SiblingSize >= ?MIN_SIBLING ->
 					remove_intermediate(BigSet, OldTableKey, Ref_Count, Shard)
-			end;		
+			end;
 		Size when Size > ?MAX_COUNT ->
 			{{K1, Lower_Shard}, {K2, Middle_Shard}, {K3, Upper_Shard}} = antidote_crdt_bigset_shard : split(Shard, Key),
 			Time = erlang:system_time(),
@@ -260,7 +256,8 @@ pick_action({Big, Tree, Table, ID, VV} = BigSet, Shard, OldTableKey, Ref_Count, 
 			case Ref_Count of  
 				% intermediate version, can be deleted immediately
 				?ZERO_REFS ->
-					ets:delete(Table, OldTableKey)
+					ets:delete(Table, OldTableKey);
+				_ -> ok
 			end,	
 			ets:insert(Table, [{{K1, {V1, Time}}, ?ZERO_REFS, Lower_Shard}, {{K2, {V2, Time}}, ?ZERO_REFS, Middle_Shard},{{K3, {V3, Time}}, ?ZERO_REFS, Upper_Shard}]),
 			{Big, antidote_crdt_bigset_keytree : insert_three(K1, K2, K3, {V1, Time}, {V2, Time}, {V3, Time}, Tree), Table, ID, VV};
@@ -314,8 +311,9 @@ remove_tokens(_Table, []) ->
 	ok;
 remove_tokens(Table, [{Key, Inc}|Rest]) ->
 	case ets:update_counter(Table, Key, Inc) of
-		?ZERO_REFS ->
-			ets:delete(Table, Key)
+		Counter == ?ZERO_REFS ->
+			ets:delete(Table, Key);
+		_ -> ok
 	end,
 	remove_tokens(Table, Rest).
 
@@ -326,7 +324,7 @@ remove_tokens(Table, [{Key, Inc}|Rest]) ->
 delete_old(Table)->
 	ets:safe_fixtable(Table, true),
 	LastGC = ets:lookup_element(Table, "LastGC", 2),
-	delete_old(Table, ets:first(Table), LastGC+4*(erlang:system_time()-LastGC)div 5).
+	delete_old(Table, ets:first(Table), LastGC + ?GC_FACTOR (erlang:system_time()-LastGC)).
 -spec delete_old(atom(), tablekey(), erlang:system_time()) -> ok.
 delete_old(Table, '$end_of_table', _LastGC)->
 	ets:update_element(Table, "LastGC", {2, erlang:system_time()}),
@@ -337,7 +335,8 @@ delete_old(Table, "LastGC", LastGC) ->
 delete_old(Table, {_Key, {_Version, Time}}=TableKey, LastGC)->
 	case {Time, ets:lookup_element(Table, TableKey, 2)} of
 		{Time, ?ZERO_REFS} when Time < LastGC ->
-			ets:delete(Table, TableKey)
+			ets:delete(Table, TableKey);
+		_ -> ok
 	end,
 	delete_old(Table, ets:next(Table, TableKey), LastGC).
 
@@ -373,7 +372,7 @@ is_bottom(State) -> State == new().
 %% ===================================================================
 %% EUnit tests
 %% ===================================================================
-%-ifdef(TEST).
+-ifdef(TEST).
 
 new_test() ->
 	BigSet = new(),
@@ -515,4 +514,3 @@ binary_test() ->
     ?assertEqual(equal(BigSet3, BigSet4), true).
 
 -endif.
-
