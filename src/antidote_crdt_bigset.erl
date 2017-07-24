@@ -311,7 +311,7 @@ remove_tokens(_Table, []) ->
 	ok;
 remove_tokens(Table, [{Key, Inc}|Rest]) ->
 	case ets:update_counter(Table, Key, Inc) of
-		Counter == ?ZERO_REFS ->
+		?ZERO_REFS ->
 			ets:delete(Table, Key);
 		_ -> ok
 	end,
