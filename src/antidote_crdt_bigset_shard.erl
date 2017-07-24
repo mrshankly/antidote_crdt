@@ -43,12 +43,11 @@ update_shard_helper({Elem1, ToAdd, ToRemove}=Op,  [{Elem2, CurrentTokens}|ShardR
 - spec apply_downstream(elem(), tokens(), tokens(), tokens())->shard().
 %% remove
 apply_downstream(Elem, CurrentTokens, [], VV) ->
-	Tokens = remove_tokens(CurrentTokens, VV),
-	case Tokens of 
+	case remove_tokens(CurrentTokens, VV) of 
 		[] ->
 			[];
-		_ ->
-			[{Elem, remove_tokens(CurrentTokens, VV)}]
+		Tokens ->
+			[{Elem, Tokens}]
 	end;
 %% add
 apply_downstream(Elem, CurrentTokens, [ID], VV) ->
@@ -67,7 +66,7 @@ remove_tokens([Head|Rest1]=CurrentTokens, [{Key2, Counter2}|Rest2]=VV) ->
 			[{Key1, Counter1}] ++ remove_tokens(Rest1, VV);
 		{_Key1, Counter1} when Counter2 >= Counter1 ->
 			remove_tokens(Rest1, Rest2);
-		{Key1, Counter1} when Counter2 =< Counter1->
+		{Key1, Counter1} when Counter2 < Counter1->
 			[{Key1, Counter1}] ++ remove_tokens(Rest1, Rest2)
 	end.
 
