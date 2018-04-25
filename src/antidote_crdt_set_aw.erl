@@ -44,7 +44,6 @@
 %% @end
 -module(antidote_crdt_set_aw).
 
--include("antidote_crdt.hrl").
 
 %% Callbacks
 -export([ new/0,

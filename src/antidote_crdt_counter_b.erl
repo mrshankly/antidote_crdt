@@ -16,8 +16,6 @@
 
 -behaviour(antidote_crdt).
 
--include("antidote_crdt.hrl").
-
 %% Call backs
 -export([ new/0,
           value/1,
