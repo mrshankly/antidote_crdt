@@ -24,12 +24,13 @@
 %%
 %% An operation-based CRDT, very similar to antidote_crdt_gmap.
 %% It keeps two maps, the index map and the indirection map:
-%%  - the index map stores index entries, each one maps an indexed
-%%    value and a set of primary keys;
-%%  - the indirection map stores the inverted bindings between primary
-%%    keys and indexed values and has the same behaviour as the gmap.
+%% - the index map stores index entries, each one maps an indexed
+%%   value and a set of primary keys;
+%% - the indirection map stores the inverted bindings between primary
+%%   keys and indexed values and has the same behaviour as the map_go.
 %%
-%% This CRDT does not support entry deletions.
+%% This data type uses the Erlang's gb_trees to store index entries.
+%% This data type does not support entry deletions.
 %% ------------------------------------------------------------------
 
 -module(antidote_crdt_index_go).
@@ -38,6 +39,7 @@
 -define(LOWER_BOUND_PRED, [greater, greatereq]).
 -define(UPPER_BOUND_PRED, [lesser, lessereq]).
 -define(WRONG_PRED(Preds), io_lib:format("Some of the predicates don't respect a range query: ~p", [Preds])).
+-define(BCOUNTER_DT, antidote_crdt_counter_b).
 
 %% API
 -export([new/0,
@@ -55,8 +57,8 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--type gindex() :: {gindex_type(), indexmap(), indirectionmap()}.
--type gindex_type() :: atom().
+-type index() :: {index_type(), indexmap(), indirectionmap()}.
+-type index_type() :: atom().
 -type gb_tree_node() :: nil | {_, _, _, _}.
 -type indexmap() :: {non_neg_integer(), gb_tree_node()}.
 -type indirectionmap() :: dict:dict({Key::term(), Type::atom()}, NestedState::term()).
@@ -65,13 +67,13 @@
 -type pred_arg() :: number().
 -type predicate() :: {pred_type(), pred_arg()} | infinity.
 
--type gindex_query() :: {range, {predicate(), predicate()}} |
-                        {get, term()} |
-                        {lookup, term()}.
+-type index_query() :: {range, {predicate(), predicate()}} |
+                       {get, term()} |
+                       {lookup, term()}.
 
--type gindex_op() :: {update, nested_op()} | {update, [nested_op()]}.
+-type index_op() :: {update, nested_op()} | {update, [nested_op()]}.
 -type nested_op() :: {{Key::term(), Type::atom()}, Op::term()}.
--type gindex_effect() :: {update, nested_downstream()} | {update, [nested_downstream()]}.
+-type index_effect() :: {update, nested_downstream()} | {update, [nested_downstream()]}.
 -type nested_downstream() :: {{Key::term(), Type::atom()}, Op::term()}.
 
 -type invalid_type() :: {error, wrong_type}.
@@ -82,65 +84,72 @@
                         key_not_found() |
                         wrong_predicate().
 
--spec new() -> gindex().
+-spec new() -> index().
 new() ->
-    {undefined, gb_trees:empty(), dict:new()}. %% TODO benchmark the possible choices for the index: dict, orddict, gb_trees
+    {undefined, gb_trees:empty(), dict:new()}.
 
--spec new(term()) -> gindex().
+-spec new(term()) -> index().
 new(Type) ->
     case antidote_crdt:is_type(Type) of
-        true -> {Type, gb_trees:empty(), dict:new()};
-        false -> new()
+        true ->
+            {Type, gb_trees:empty(), dict:new()};
+        false ->
+            new()
     end.
 
--spec value(gindex()) -> value_output().
+-spec value(index()) -> value_output().
 value({_Type, Index, _Indirection}) ->
     gb_trees:to_list(Index).
 
--spec value(gindex_query(), gindex()) -> value_output().
+-spec value(index_query(), index()) -> value_output().
 value({range, {LowerPred, UpperPred}}, {_Type, Index, _Indirection}) ->
     case validate_pred(lower, LowerPred) andalso validate_pred(upper, UpperPred) of
         true ->
-            %io:format("gindex: ~p~n", [Index]),
             Iterator = case LowerPred of
-                           infinity -> gb_trees:iterator(Index);
-                           _ -> gb_trees:iterator_from(lookup_lower_bound(LowerPred, Index), Index)
+                           infinity ->
+                               gb_trees:iterator(Index);
+                           _ ->
+                               gb_trees:iterator_from(lookup_lower_bound(LowerPred, Index), Index)
                        end,
             iterate_and_filter({UpperPred, [key]}, gb_trees:next(Iterator), []);
-            %Iterator = gb_trees:iterator(Index),
-            %iterate_and_filter2({LowerPred, [key]}, {UpperPred, [key]}, gb_trees:next(Iterator), []);
         false ->
             throw(lists:flatten(?WRONG_PRED({LowerPred, UpperPred})))
     end;
 value({get, Key}, {_Type, Index, _Indirection}) ->
     case gb_trees:lookup(Key, Index) of
-        {value, Value} -> {Key, Value};
-        none -> {error, key_not_found}
+        {value, Value} ->
+            {Key, Value};
+        none ->
+            {error, key_not_found}
     end;
 value({lookup, Key}, {Type, _Index, Indirection} = GIndex) ->
     case dict:find(Key, Indirection) of
         {ok, CRDTValue} ->
             Value = Type:value(CRDTValue),
             value({get, Value}, GIndex);
-        error -> {error, key_not_found}
+        error ->
+            {error, key_not_found}
     end.
 
--spec downstream(gindex_op(), gindex()) -> {ok, gindex_effect()} | invalid_type().
+-spec downstream(index_op(), index()) -> {ok, index_effect()} | invalid_type().
 downstream({update, {Type, Key, Op}}, {_Type, _Index, Indirection} = GIndex) ->
     case index_type(GIndex, Type) of
         Type ->
             CurrentValue = case dict:is_key(Key, Indirection) of
-                               true -> dict:fetch(Key, Indirection);
-                               false -> Type:new()
+                               true ->
+                                   dict:fetch(Key, Indirection);
+                               false ->
+                                   Type:new()
                            end,
             {ok, DownstreamOp} = Type:downstream(Op, CurrentValue),
             {ok, {update, {Type, Key, DownstreamOp}}};
-        _Else -> {error, wrong_type}
+        _Else ->
+            {error, wrong_type}
     end;
 downstream({update, Ops}, GIndex) when is_list(Ops) ->
     {ok, {update, lists:map(fun(Op) -> {ok, DSOp} = downstream({update, Op}, GIndex), DSOp end, Ops)}}.
 
--spec update(gindex_effect(), gindex()) -> {ok, gindex()}.
+-spec update(index_effect(), index()) -> {ok, index()}.
 update({update, {Type, Key, Op}}, {_Type, Index, Indirection}) ->
     {OldValue, NewValue} = case dict:find(Key, Indirection) of
         {ok, Value} ->
@@ -159,7 +168,7 @@ update({update, {Type, Key, Op}}, {_Type, Index, Indirection}) ->
 update({update, Ops}, Map) ->
     apply_ops(Ops, Map).
 
--spec equal(gindex(), gindex()) -> boolean().
+-spec equal(index(), index()) -> boolean().
 equal({Type1, Index1, Indirection1}, {Type2, Index2, Indirection2}) ->
     Type1 =:= Type2 andalso
     Index1 =:= Index2 andalso
@@ -169,11 +178,11 @@ equal({Type1, Index1, Indirection1}, {Type2, Index2, Indirection2}) ->
 -define(TAG, 101).
 -define(V1_VERS, 1).
 
--spec to_binary(gindex()) -> binary().
-to_binary(GIndex) ->
-    <<?TAG:8/integer, ?V1_VERS:8/integer, (term_to_binary(GIndex))/binary>>.
+-spec to_binary(index()) -> binary().
+to_binary(Index) ->
+    <<?TAG:8/integer, ?V1_VERS:8/integer, (term_to_binary(Index))/binary>>.
 
--spec from_binary(binary()) -> {ok, gindex()}.
+-spec from_binary(binary()) -> {ok, index()}.
 from_binary(<<?TAG:8/integer, ?V1_VERS:8/integer, Bin/binary>>) ->
     {ok, binary_to_term(Bin)}.
 
@@ -218,18 +227,28 @@ update_index(OldEntryKey, NewEntryKey, EntryValue, Index) ->
     Removed = case gb_trees:lookup(OldEntryKey, Index) of
         {value, Set} ->
             case ordsets:is_element(EntryValue, Set) of
-                true -> gb_trees:update(OldEntryKey, ordsets:del_element(EntryValue, Set), Index);
-                false -> full_search(EntryValue, Index)
+                true ->
+                    gb_trees:update(OldEntryKey, ordsets:del_element(EntryValue, Set), Index);
+                false ->
+                    full_search(EntryValue, Index)
             end;
-        none -> Index
+        none ->
+            Index
     end,
 
+    %% The insert is slower than the update in gb_trees.
+    %% That's why we first lookup for an entry and, if it
+    %% exists, we update it, instead of forcing to insert
+    %% an already existing entry.
     case gb_trees:lookup(NewEntryKey, Removed) of
-         {value, Set2} -> gb_trees:update(NewEntryKey, ordsets:add_element(EntryValue, Set2), Removed);
-         none -> gb_trees:insert(NewEntryKey, ordsets:add_element(EntryValue, ordsets:new()), Removed)
+         {value, Set2} ->
+             gb_trees:update(NewEntryKey, ordsets:add_element(EntryValue, Set2), Removed);
+         none ->
+             gb_trees:insert(NewEntryKey, ordsets:add_element(EntryValue, ordsets:new()), Removed)
     end.
 
-get_value(_Type, undefined) -> undefined;
+get_value(_Type, undefined) ->
+    undefined;
 get_value(Type, CRDTValue) ->
     Value = Type:value(CRDTValue),
     calc_value(Type, Value).
@@ -237,47 +256,54 @@ get_value(Type, CRDTValue) ->
 %% A special case for a bounded counter, where the value of an index entry
 %% supported by this CRDT corresponds to the difference between the sum of
 %% increments and the sum of decrements.
-calc_value(antidote_crdt_counter_b, {Inc, Dec}) ->
+calc_value(?BCOUNTER_DT, {Inc, Dec}) ->
     IncList = orddict:to_list(Inc),
     DecList = orddict:to_list(Dec),
     SumInc = sum_values(IncList),
     SumDec = sum_values(DecList),
     SumInc - SumDec;
-calc_value(_, Value) -> Value.
+calc_value(_, Value) ->
+    Value.
 
-sum_values(List) when is_list(List) -> lists:sum([Value || {_Ids, Value} <- List]).
+sum_values(List) when is_list(List) ->
+    lists:sum([Value || {_Ids, Value} <- List]).
 
-apply_ops([], GIndex) ->
-    {ok, GIndex};
-apply_ops([Op | Rest], GIndex) ->
-    {ok, GIndex2} = update(Op, GIndex),
-    apply_ops(Rest, GIndex2).
+apply_ops([], Index) ->
+    {ok, Index};
+apply_ops([Op | Rest], Index) ->
+    {ok, Index2} = update(Op, Index),
+    apply_ops(Rest, Index2).
 
 rec_equals(Type, Indirection1, Indirection2) ->
     IndList1 = dict:to_list(Indirection1),
     IndList2 = dict:to_list(Indirection2),
     Remaining = lists:dropwhile(fun({Key, Value}) ->
         case proplists:lookup(Key, IndList2) of
-            none -> false;
+            none ->
+                false;
             {Key, Value2} ->
                 Type:equal(Value, Value2)
         end
     end, IndList1),
     length(Remaining) =:= 0.
 
-distinct([]) -> true;
+distinct([]) ->
+    true;
 distinct([X | Xs]) ->
     not lists:member(X, Xs) andalso distinct(Xs).
 
-lookup_lower_bound(_LowerPred, {0, _Tree}) -> nil;
+lookup_lower_bound(_LowerPred, {0, _Tree}) ->
+    nil;
 lookup_lower_bound(LowerPred, {Size, Tree}) when Size > 0 ->
     lookup_lower_bound(LowerPred, Tree, nil).
 lookup_lower_bound(_LowerPred, nil, Final) ->
     Final;
 lookup_lower_bound(LowerPred, {Key, _Value, Left, Right}, Final) ->
     case apply_pred(LowerPred, Key) of
-        true -> lookup_lower_bound(LowerPred, Left, Key);
-        false -> lookup_lower_bound(LowerPred, Right, Final)
+        true ->
+            lookup_lower_bound(LowerPred, Left, Key);
+        false ->
+            lookup_lower_bound(LowerPred, Right, Final)
     end.
 
 iterate_and_filter(_Predicate, none, Acc) ->
@@ -286,46 +312,39 @@ iterate_and_filter({infinity, _} = Predicate, {Key, Value, Iter}, Acc) ->
     iterate_and_filter(Predicate, gb_trees:next(Iter), lists:append(Acc, [{Key, Value}]));
 iterate_and_filter({Bound, Params} = Predicate, {Key, Value, Iter}, Acc) ->
     Result = case Params of
-                 [key] -> apply_pred(Bound, Key);
-                 [value, V] -> apply_pred(Bound, [Value, V])
+                 [key] ->
+                     apply_pred(Bound, Key);
+                 [value, V] ->
+                     apply_pred(Bound, [Value, V])
              end,
     case Result of
-        true -> iterate_and_filter(Predicate, gb_trees:next(Iter), lists:append(Acc, [{Key, Value}]));
-        false -> iterate_and_filter(Predicate, gb_trees:next(Iter), Acc)
+        true ->
+            iterate_and_filter(Predicate, gb_trees:next(Iter), lists:append(Acc, [{Key, Value}]));
+        false ->
+            iterate_and_filter(Predicate, gb_trees:next(Iter), Acc)
     end.
-
-%%iterate_and_filter2(_Predicate1, _Predicate2, none, Acc) ->
-%%    Acc;
-%%iterate_and_filter2({infinity, _} = Predicate1, Predicate2, {Key, Value, Iter}, Acc) ->
-%%    iterate_and_filter2(Predicate1, Predicate2, gb_trees:next(Iter), lists:append(Acc, [{Key, Value}]));
-%%iterate_and_filter2({Bound1, Params1} = Predicate1, {Bound2, Params2} = Predicate2, {Key, Value, Iter}, Acc) ->
-%%    Result = case {Params1, Params2} of
-%%                 {[key], [key]} -> apply_pred(Bound1, Key) andalso apply_pred(Bound2, Key);
-%%                 {[value, V1], [value, V2]} -> apply_pred(Bound1, [Value, V1]) andalso apply_pred(Bound2, [Value, V2])
-%%             end,
-%%    case Result of
-%%        true -> iterate_and_filter2(Predicate1, Predicate2, gb_trees:next(Iter), lists:append(Acc, [{Key, Value}]));
-%%        false -> iterate_and_filter2(Predicate1, Predicate2, gb_trees:next(Iter), Acc)
-%%    end.
 
 full_search(EntryValue, Index) ->
     Iterator = gb_trees:iterator(Index),
     FilterFun = fun([Set, V]) -> ordsets:is_element(V, Set) end,
     case iterate_and_filter({FilterFun, [value, EntryValue]}, gb_trees:next(Iterator), []) of
-        [] -> Index;
+        [] ->
+            Index;
         Entries ->
             lists:foldl(fun({Key, Value}, AccIndex) ->
                 gb_trees:update(Key, ordsets:del_element(EntryValue, Value), AccIndex)
             end, Index, Entries)
     end.
 
-validate_pred(_BoundType, infinity) -> true;
+validate_pred(_BoundType, infinity) ->
+    true;
 validate_pred(lower, {Type, _Val}) ->
     lists:member(Type, ?LOWER_BOUND_PRED);
 validate_pred(upper, {Type, _Val}) ->
     lists:member(Type, ?UPPER_BOUND_PRED).
 
-apply_pred(infinity, _Param) -> true;
+apply_pred(infinity, _Param) ->
+    true;
 apply_pred({Type, Val}, Param) ->
     Func = to_predicate(Type, Val),
     Func(Param);
@@ -343,9 +362,6 @@ to_predicate(notequality, Val) -> fun(V) -> V /= Val end.
 %% EUnit tests
 %% ===================================================================
 -ifdef(TEST).
-
-%tree_insertions(Number, TreeAcc) ->
-%    gb_trees:enter(Number, Number, TreeAcc).
 
 new_test() ->
     ?assertEqual({undefined, gb_trees:empty(), dict:new()}, new()),
@@ -392,22 +408,6 @@ equal_test() ->
     ?assertEqual(false, equal(Index1, Index2)),
     ?assertEqual(false, equal(Index2, Index3)),
     ?assertEqual(false, equal(Index2, Index4)).
-
-%%bound_search_test() ->
-%%    Pred = {greatereq, 3},
-%%    Tree1 = gb_trees:empty(),
-%%    Tree2 = gb_trees:enter(1, 1, Tree1),
-%%    Tree3 = lists:foldl(fun tree_insertions/2, Tree1, lists:seq(1, 10)),
-%%    Tree4 = lists:foldl(fun tree_insertions/2, Tree1, lists:seq(2, 20, 2)),
-%%    Tree5 = lists:foldl(fun tree_insertions/2, Tree1, lists:reverse(lists:seq(1, 5))),
-%%    Tree6 = lists:foldl(fun tree_insertions/2, Tree1, [1, 2]),
-%%
-%%    ?assertEqual(nil, lookup_lower_bound(Pred, Tree1)),
-%%    ?assertEqual(nil, lookup_lower_bound(Pred, Tree2)),
-%%    ?assertEqual(3, lookup_lower_bound(Pred, Tree3)),
-%%    ?assertEqual(4, lookup_lower_bound(Pred, Tree4)),
-%%    ?assertEqual(3, lookup_lower_bound(Pred, Tree5)),
-%%    ?assertEqual(nil, lookup_lower_bound(Pred, Tree6)).
 
 range_test() ->
     Index1 = new(),
