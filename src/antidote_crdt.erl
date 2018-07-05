@@ -57,7 +57,7 @@ antidote_crdt_counter_pn
 | antidote_crdt_register_mv
 | antidote_crdt_map_go
 | antidote_crdt_map_rr
-| antidote_crdt_index_go.
+| antidote_crdt_index.
 
 % Note: the crdt and effect types are not correct, the tags just help to find errors
 % The State of a CRDT:
@@ -113,7 +113,7 @@ is_type(antidote_crdt_register_lww) -> true;
 is_type(antidote_crdt_register_mv)  -> true;
 is_type(antidote_crdt_map_go)       -> true;
 is_type(antidote_crdt_map_rr)       -> true;
-is_type(antidote_crdt_index_go)     -> true;
+is_type(antidote_crdt_index)     -> true;
 is_type(_)                          -> false.
 
 
