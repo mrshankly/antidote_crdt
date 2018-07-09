@@ -213,17 +213,23 @@ from_binary(<<?TAG:8/integer, ?V1_VERS:8/integer, Bin/binary>>) ->
 -spec is_operation(term()) -> boolean().
 is_operation(Operation) ->
     case Operation of
-        {update, {Type, _Key, Op}} ->
-            antidote_crdt:is_type(Type)
-                andalso Type:is_operation(Op);
-        {remove, {Type, _Key, Op}} ->
-            antidote_crdt:is_type(Type)
-                andalso (Type:is_operation(Op) orelse Op == none);
-        {OpType, Ops} when is_list(Ops) ->
-            distinct([Key || {Key, _} <- Ops])
-                andalso lists:all(fun(Op) -> is_operation({OpType, Op}) end, Ops);
-        _ ->
-            false
+      {range, {_LowerPred, _UpperPred}} ->
+        true;
+      {get, _Key} ->
+        true;
+      {lookup, Key} ->
+        true;
+      {update, {Type, _Key, Op}} ->
+        antidote_crdt:is_type(Type) andalso
+          Type:is_operation(Op);
+      {remove, {Type, _Key, Op}} ->
+        antidote_crdt:is_type(Type) andalso
+          (Type:is_operation(Op) orelse Op == none);
+      {OpType, Ops} when is_list(Ops) ->
+        distinct([Key || {Key, _} <- Ops]) andalso
+          lists:all(fun(Op) -> is_operation({OpType, Op}) end, Ops);
+      _ ->
+        false
     end.
 
 -spec require_state_downstream(term()) -> boolean().
