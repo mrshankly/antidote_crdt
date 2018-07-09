@@ -217,7 +217,7 @@ is_operation(Operation) ->
         true;
       {get, _Key} ->
         true;
-      {lookup, Key} ->
+      {lookup, _Key} ->
         true;
       {update, {Type, _Key, Op}} ->
         antidote_crdt:is_type(Type) andalso
@@ -582,11 +582,17 @@ is_operation_test() ->
     Op3 = {update, {antidote_crdt_counter_pn, k, {increment, 1}}},
     Op4 = {remove, {antidote_crdt_register_lww, k, none}},
     Op5 = {update, {antidote_crdt_set_aw, k, {assign, v}}},
+    Op6 = {range, pred1, pred2},
+    Op7 = {get, key},
+    Op8 = {lookup, key},
 
     ?assertEqual(true, is_operation(Op1)),
     ?assertEqual(true, is_operation(Op2)),
     ?assertEqual(true, is_operation(Op3)),
     ?assertEqual(true, is_operation(Op4)),
-    ?assertEqual(false, is_operation(Op5)).
+    ?assertEqual(false, is_operation(Op5)),
+    ?assertEqual(true, is_operation(Op6)),
+    ?assertEqual(true, is_operation(Op7)),
+    ?assertEqual(true, is_operation(Op8)).
 
 -endif.
