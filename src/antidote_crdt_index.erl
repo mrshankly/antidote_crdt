@@ -60,24 +60,37 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--type index() :: {index_type(), indexmap(), indirectionmap()}.
+-export_type([antidote_crdt_index/0,
+              antidote_crdt_index_op/0,
+              antidote_crdt_index_query/0]).
+
+-type antidote_crdt_index() :: {index_type(), indexmap(), indirectionmap()}.
 -type index_type() :: atom().
 -type gb_tree_node() :: nil | {_, _, _, _}.
 -type indexmap() :: {non_neg_integer(), gb_tree_node()}.
 -type indirectionmap() :: dict:dict({Key::term(), Type::atom()}, NestedState::term()).
 
--type pred_type() :: greater | greatereq | lesser | lessereq.
+-type pred_type() :: greater | greatereq | lesser | lessereq | equality | notequality.
 -type pred_arg() :: number().
 -type predicate() :: {pred_type(), pred_arg()} | infinity.
 
--type index_query() :: {range, {predicate(), predicate()}} |
-                       {get, term()} |
-                       {lookup, term()}.
+-type antidote_crdt_index_query() :: {range, {predicate(), predicate()} | predicate()} |
+                                     {get, term()} |
+                                     {lookup, term()}.
 
--type index_op() :: {update, nested_op()} | {update, [nested_op()]}.
+-type antidote_crdt_index_op() :: {update, nested_op()} |
+                                  {update, [nested_op()]} |
+                                  {remove, remove_op()} |
+                                  {remove, [remove_op()]}.
 -type nested_op() :: {{Key::term(), Type::atom()}, Op::term()}.
--type index_effect() :: {update, nested_downstream()} | {update, [nested_downstream()]}.
--type nested_downstream() :: {{Key::term(), Type::atom()}, Op::term()}.
+-type remove_op() :: {Type::atom(), Key::term()}.
+
+-type index_effect() :: {update, nested_downstream()} |
+                        {update, [nested_downstream()]} |
+                        {remove, remove_downstream()} |
+                        {remove, [remove_downstream()]}.
+-type nested_downstream() :: {Type::atom(), Key::term(), Op::term()}.
+-type remove_downstream() :: {Type::atom(), Key::term(), none} | {Type::atom(), Key::term(), Op::term()}.
 
 -type invalid_type() :: {error, wrong_type}.
 -type key_not_found() :: {error, key_not_found}.
@@ -87,11 +100,11 @@
                         key_not_found() |
                         wrong_predicate().
 
--spec new() -> index().
+-spec new() -> antidote_crdt_index().
 new() ->
     {undefined, gb_trees:empty(), dict:new()}.
 
--spec new(term()) -> index().
+-spec new(term()) -> antidote_crdt_index().
 new(Type) ->
     case antidote_crdt:is_type(Type) of
         true ->
@@ -100,11 +113,15 @@ new(Type) ->
             new()
     end.
 
--spec value(index()) -> value_output().
+-spec value(antidote_crdt_index()) -> value_output().
 value({_Type, IndexTree, _Indirection}) ->
     gb_trees:to_list(IndexTree).
 
--spec value(index_query(), index()) -> value_output().
+-spec value(antidote_crdt_index_query(), antidote_crdt_index()) -> value_output().
+value({range, {equality, Val}}, Index) ->
+    value({get, Val}, Index);
+value({range, {notequality, _Val} = Pred}, {_IndexPolicy, _DepPolicy, IndexTree}) ->
+    iterate_and_filter({Pred, [key]}, gb_trees:iterator(IndexTree), []);
 value({range, {LowerPred, UpperPred}}, {_Type, IndexTree, _Indirection}) ->
     case validate_pred(lower, LowerPred) andalso validate_pred(upper, UpperPred) of
         true ->
@@ -134,7 +151,7 @@ value({lookup, Key}, {Type, _IndexTree, Indirection} = Index) ->
             {error, key_not_found}
     end.
 
--spec downstream(index_op(), index()) -> {ok, index_effect()} | invalid_type().
+-spec downstream(antidote_crdt_index_op(), antidote_crdt_index()) -> {ok, index_effect()} | invalid_type().
 downstream({update, {Type, Key, Op}}, {_Type, _IndexTree, Indirection} = Index) ->
     case index_type(Index, Type) of
         Type ->
@@ -157,7 +174,7 @@ downstream({remove, {Type, Key}}, Index) ->
 downstream({remove, Ops}, Index) when is_list(Ops) ->
     {ok, {remove, lists:map(fun(Op) -> {ok, DSOp} = downstream({remove, Op}, Index), DSOp end, Ops)}}.
 
--spec update(index_effect(), index()) -> {ok, index()}.
+-spec update(index_effect(), antidote_crdt_index()) -> {ok, antidote_crdt_index()}.
 update({update, {Type, Key, Op}}, {_Type, IndexTree, Indirection}) ->
     {OldValue, NewValue} = apply_op(Key, Type, Op, Indirection),
     case OldValue == NewValue of
@@ -192,7 +209,7 @@ update({remove, {Type, Key, Op}}, {_Type, IndexTree, Indirection}) ->
 update({remove, Ops}, Index) ->
     apply_ops(Ops, Index).
 
--spec equal(index(), index()) -> boolean().
+-spec equal(antidote_crdt_index(), antidote_crdt_index()) -> boolean().
 equal({Type1, IndexTree1, Indirection1}, {Type2, IndexTree2, Indirection2}) ->
     Type1 =:= Type2 andalso
     IndexTree1 =:= IndexTree2 andalso
@@ -202,11 +219,11 @@ equal({Type1, IndexTree1, Indirection1}, {Type2, IndexTree2, Indirection2}) ->
 -define(TAG, 101).
 -define(V1_VERS, 1).
 
--spec to_binary(index()) -> binary().
+-spec to_binary(antidote_crdt_index()) -> binary().
 to_binary(Index) ->
     <<?TAG:8/integer, ?V1_VERS:8/integer, (term_to_binary(Index))/binary>>.
 
--spec from_binary(binary()) -> {ok, index()}.
+-spec from_binary(binary()) -> {ok, antidote_crdt_index()}.
 from_binary(<<?TAG:8/integer, ?V1_VERS:8/integer, Bin/binary>>) ->
     {ok, binary_to_term(Bin)}.
 
@@ -311,7 +328,8 @@ generate_downstream_remove({Type, Key}, {Type, _IndexTree, Indirection}) ->
     DownstreamEffect =
         case Type:is_operation({reset, {}}) of
             true ->
-                {ok, _} = Type:downstream({reset, {}}, CurrentValue);
+                {ok, DownS} = Type:downstream({reset, {}}, CurrentValue),
+                DownS;
             false ->
                 resolve_downstream(Type, CurrentValue)
         end,
@@ -446,17 +464,16 @@ validate_pred(upper, {Type, _Val}) ->
 apply_pred(infinity, _Param) ->
     true;
 apply_pred({Type, Val}, Param) ->
-    Func = to_predicate(Type, Val),
-    Func(Param);
+    to_predicate(Type, Param, Val);
 apply_pred(Func, Param) when is_function(Func) ->
     Func(Param).
 
-to_predicate(greater, Val) -> fun(V) -> V > Val end;
-to_predicate(greatereq, Val) -> fun(V) -> V >= Val end;
-to_predicate(lesser, Val) -> fun(V) -> V < Val end;
-to_predicate(lessereq, Val) -> fun(V) -> V =< Val end;
-to_predicate(equality, Val) -> fun(V) -> V == Val end;
-to_predicate(notequality, Val) -> fun(V) -> V /= Val end.
+to_predicate(greater, Val1, Val2) -> Val1 > Val2;
+to_predicate(greatereq, Val1, Val2) -> Val1 >= Val2;
+to_predicate(lesser, Val1, Val2) -> Val1 < Val2;
+to_predicate(lessereq, Val1, Val2) -> Val1 =< Val2;
+to_predicate(equality, Val1, Val2) -> Val1 == Val2;
+to_predicate(notequality, Val1, Val2) -> Val1 /= Val2.
 
 %% ===================================================================
 %% EUnit tests
@@ -591,7 +608,7 @@ is_operation_test() ->
     ?assertEqual(true, is_operation(Op3)),
     ?assertEqual(true, is_operation(Op4)),
     ?assertEqual(false, is_operation(Op5)),
-    ?assertEqual(true, is_operation(Op6)),
+    ?assertEqual(false, is_operation(Op6)),
     ?assertEqual(true, is_operation(Op7)),
     ?assertEqual(true, is_operation(Op8)).
 
