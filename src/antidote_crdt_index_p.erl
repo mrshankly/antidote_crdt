@@ -342,14 +342,19 @@ generate_downstream_update({version, Op}, Entry) ->
     VrsCRDT = fetch_map_key(?version_key, Entry, ?VRS_DT:new()),
     {ok, DownS} = ?VRS_DT:downstream(Op, VrsCRDT),
     {ok, {version, DownS}};
-generate_downstream_update({refs, {RefName, Op}}, Entry) ->
+generate_downstream_update({refs, Ops}, Entry) when is_list(Ops) ->
     Refs = fetch_map_key(?refs_key, Entry, []),
-    State = case proplists:get_value(RefName, Refs) of
-                undefined -> ?REF_DT:new();
-                Val -> Val
-            end,
-    {ok, DownS} = ?REF_DT:downstream(Op, State),
-    {ok, {refs, {RefName, DownS}}}.
+    NewRefs = lists:foldl(fun({RefName, Op}, AccRefs) ->
+        State = case proplists:get_value(RefName, AccRefs) of
+                    undefined -> ?REF_DT:new();
+                    Val -> Val
+                end,
+        {ok, UpdatedState} = ?REF_DT:downstream(Op, State),
+        lists:keystore(RefName, 1, AccRefs, {RefName, UpdatedState})
+    end, Refs, Ops),
+    {ok, {refs, NewRefs}};
+generate_downstream_update({refs, {RefName, Op}}, Entry) ->
+    generate_downstream_update({refs, [{RefName, Op}]}, Entry).
 
 generate_downstream_remove(Key, {_IndexPolicy, _DepPolicy, IndexTree}) ->
     Entry = case gb_trees:lookup(Key, IndexTree) of
