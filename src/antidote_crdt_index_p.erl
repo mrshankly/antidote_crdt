@@ -459,6 +459,10 @@ is_operation0({bound_obj, Op}) -> ?BOBJ_DT:is_operation(Op);
 is_operation0({state, Op}) -> ?STATE_DT:is_operation(Op);
 is_operation0({version, Op}) -> ?VRS_DT:is_operation(Op);
 is_operation0({refs, {_RefName, Op}}) -> ?REF_DT:is_operation(Op);
+is_operation0({refs, RefList}) when is_list(RefList) ->
+    lists:foldl(fun({_RefName, Op}, BoolAcc) ->
+        BoolAcc andalso ?REF_DT:is_operation(Op)
+    end, true, RefList);
 is_operation0(_) -> false.
 
 %% A special case for a bounded counter, where the value of an index entry
@@ -723,6 +727,8 @@ is_operation_test() ->
     Op6 = {get, key},
     Op7 = {lookup, key},
     Op8 = {policies, {}},
+    Op9 = {update, {k, {refs, {refname, {assign, refval}}}}},
+    Op10 = {update, {k, {refs, [{refname, {assign, refval}}, {refname2, {assign, refval2}}]}}},
 
     ?assertEqual(true, is_operation(Op1)),
     ?assertEqual(false, is_operation(Op2)),
@@ -731,6 +737,8 @@ is_operation_test() ->
     ?assertEqual(false, is_operation(Op5)),
     ?assertEqual(true, is_operation(Op6)),
     ?assertEqual(false, is_operation(Op7)),
-    ?assertEqual(true, is_operation(Op8)).
+    ?assertEqual(true, is_operation(Op8)),
+    ?assertEqual(true, is_operation(Op9)),
+    ?assertEqual(true, is_operation(Op10)).
 
 -endif.
