@@ -186,7 +186,7 @@ downstream({set, {index_policy, NewIndexPolicy}}, {CurrIndexPolicy, _DepPolicy, 
 downstream({set, {dep_policy, NewDepPolicy}}, {_IndexPolicy, CurrDepPolicy, _IndexTree}) ->
     case set_policy(CurrDepPolicy, NewDepPolicy) of
         error -> {error, {invalid_dep_policy, NewDepPolicy}};
-        _Else -> {ok, {set, {index_policy, NewDepPolicy}}}
+        _Else -> {ok, {set, {dep_policy, NewDepPolicy}}}
     end.
 
 -spec update(index_effect(), antidote_crdt_index_p()) -> {ok, antidote_crdt_index_p()}.
