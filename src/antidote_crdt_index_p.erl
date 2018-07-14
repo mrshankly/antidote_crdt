@@ -81,7 +81,7 @@
 
 -type antidote_crdt_index_p() :: {policy(), policy(), indexmap()}.
 -type policy() :: add | remove.
--type entry() :: dict:dict().
+-type entry() :: map().
 -type gb_tree_node() :: nil | {_, entry(), _, _}.
 -type indexmap() :: {non_neg_integer(), gb_tree_node()}.
 
@@ -108,7 +108,7 @@
                         {remove, [remove_downstream()]} |
                         {set, set_downstream()}.
 -type nested_downstream() :: {Key::term(), Op::term()}.
--type remove_downstream() :: {Key::term(), none} | {Key::term(), dict:dict()}.
+-type remove_downstream() :: {Key::term(), none} | {Key::term(), map()}.
 -type set_downstream() :: {index_policy, policy()} | {dep_policy, policy()}.
 
 -type invalid_type() :: {error, wrong_type}.
@@ -151,7 +151,7 @@ value({range, {LowerPred, UpperPred}}, {_IndexPolicy, _DepPolicy, IndexTree}) ->
             throw(lists:flatten(?WRONG_PRED({LowerPred, UpperPred})))
     end;
 value({get, Key}, {_IndexPolicy, _DepPolicy, IndexTree}) ->
-    case fetch_key_tree(Key, IndexTree, undefined) of
+    case fetch_tree_key(Key, IndexTree, undefined) of
         undefined ->
             {error, key_not_found};
         Value ->
@@ -168,7 +168,7 @@ value({policies, {}}, {IndexPolicy, DepPolicy, _IndexTree}) ->
 -spec downstream(antidote_crdt_index_p_op(), antidote_crdt_index_p()) ->
     {ok, index_effect()} | invalid_type() | invalid_policy().
 downstream({update, {Key, Op}}, {_IndexPolicy, _DepPolicy, IndexTree}) ->
-    CurrentValue = fetch_key_tree(Key, IndexTree, new_entry()),
+    CurrentValue = fetch_tree_key(Key, IndexTree, new_entry()),
     {ok, DownstreamOp} = generate_downstream_update(Op, CurrentValue),
     {ok, {update, {Key, DownstreamOp}}};
 downstream({update, Ops}, Index) when is_list(Ops) ->
@@ -191,7 +191,7 @@ downstream({set, {dep_policy, NewDepPolicy}}, {_IndexPolicy, CurrDepPolicy, _Ind
 
 -spec update(index_effect(), antidote_crdt_index_p()) -> {ok, antidote_crdt_index_p()}.
 update({update, {Key, Op}}, {IndexPolicy, DepPolicy, IndexTree}) ->
-    CurrEntry = fetch_key_tree(Key, IndexTree, undefined),
+    CurrEntry = fetch_tree_key(Key, IndexTree, undefined),
     NewEntry = apply_op(Op, CurrEntry),
     case CurrEntry == NewEntry of
         true ->
@@ -210,13 +210,13 @@ update({update, Ops}, Index) when is_list(Ops) ->
 update({remove, {_Key, none}}, Index) ->
     {ok, Index};
 update({remove, {Key, Op}}, {IndexPolicy, DepPolicy, IndexTree}) ->
-    CurrEntry = fetch_key_tree(Key, IndexTree, undefined),
+    CurrEntry = fetch_tree_key(Key, IndexTree, undefined),
     NewEntry =
-        dict:fold(fun({FieldName, _} = OpKey, OpVal, NewValAcc) ->
+        maps:fold(fun({FieldName, _} = OpKey, OpVal, NewValAcc) ->
             AuxNewV = apply_op({FieldName, OpVal}, CurrEntry),
-            UpdatedEntry = dict:fetch(OpKey, AuxNewV),
-            dict:store(OpKey, UpdatedEntry, NewValAcc)
-        end, dict:new(), Op),
+            UpdatedEntry = maps:get(OpKey, AuxNewV),
+            maps:put(OpKey, UpdatedEntry, NewValAcc)
+        end, maps:new(), Op),
     case CurrEntry == NewEntry of
         true ->
             {ok, {IndexPolicy, DepPolicy, IndexTree}};
@@ -288,10 +288,10 @@ require_state_downstream(_Op) ->
 %% Internal functions
 %% ===================================================================
 new_entry() ->
-    WithBObj = dict:store(?bound_obj_key, ?BOBJ_DT:new(), dict:new()),
-    WithState = dict:store(?state_key, ?STATE_DT:new(), WithBObj),
-    WithVersion = dict:store(?version_key, ?VRS_DT:new(), WithState),
-    WithRefs = dict:store(?refs_key, [], WithVersion),
+    WithBObj = maps:put(?bound_obj_key, ?BOBJ_DT:new(), maps:new()),
+    WithState = maps:put(?state_key, ?STATE_DT:new(), WithBObj),
+    WithVersion = maps:put(?version_key, ?VRS_DT:new(), WithState),
+    WithRefs = maps:put(?refs_key, [], WithVersion),
     WithRefs.
 
 to_value(IndexTree) ->
@@ -313,10 +313,10 @@ entry_value(Entry) ->
         true ->
             none;
         false ->
-            BoundKey = fetch_key_dict(?bound_obj_key, Entry, ?BOBJ_DT:new()),
-            State = fetch_key_dict(?state_key, Entry, ?STATE_DT:new()),
-            Version = fetch_key_dict(?version_key, Entry, ?VRS_DT:new()),
-            Refs = fetch_key_dict(?refs_key, Entry, []),
+            BoundKey = fetch_map_key(?bound_obj_key, Entry, ?BOBJ_DT:new()),
+            State = fetch_map_key(?state_key, Entry, ?STATE_DT:new()),
+            Version = fetch_map_key(?version_key, Entry, ?VRS_DT:new()),
+            Refs = fetch_map_key(?refs_key, Entry, []),
             RefValues = lists:map(fun({RefName, RefState}) -> {RefName, ?REF_DT:value(RefState)} end, Refs),
             {ok, {?BOBJ_DT:value(BoundKey), ?STATE_DT:value(State), ?VRS_DT:value(Version), RefValues}}
     end.
@@ -331,19 +331,19 @@ apply_op(Op, IndexEntry) ->
     StateUpdated.
 
 generate_downstream_update({bound_obj, Op}, Entry) ->
-    BObjCRDT = fetch_key_dict(?bound_obj_key, Entry, ?BOBJ_DT:new()),
+    BObjCRDT = fetch_map_key(?bound_obj_key, Entry, ?BOBJ_DT:new()),
     {ok, DownS} = ?BOBJ_DT:downstream(Op, BObjCRDT),
     {ok, {bound_obj, DownS}};
 generate_downstream_update({state, Op}, Entry) ->
-    StateCRDT = fetch_key_dict(?state_key, Entry, ?STATE_DT:new()),
+    StateCRDT = fetch_map_key(?state_key, Entry, ?STATE_DT:new()),
     {ok, DownS} = ?STATE_DT:downstream(Op, StateCRDT),
     {ok, {state, DownS}};
 generate_downstream_update({version, Op}, Entry) ->
-    VrsCRDT = fetch_key_dict(?version_key, Entry, ?VRS_DT:new()),
+    VrsCRDT = fetch_map_key(?version_key, Entry, ?VRS_DT:new()),
     {ok, DownS} = ?VRS_DT:downstream(Op, VrsCRDT),
     {ok, {version, DownS}};
 generate_downstream_update({refs, {RefName, Op}}, Entry) ->
-    Refs = fetch_key_dict(?refs_key, Entry, []),
+    Refs = fetch_map_key(?refs_key, Entry, []),
     State = case proplists:get_value(RefName, Refs) of
                 undefined -> ?REF_DT:new();
                 Val -> Val
@@ -359,7 +359,7 @@ generate_downstream_remove(Key, {_IndexPolicy, _DepPolicy, IndexTree}) ->
     ResetOp = {reset, {}},
 
     DownstreamEffect =
-        dict:fold(fun({FieldName, FieldType} = Field, State, Acc) ->
+        maps:fold(fun({FieldName, FieldType} = Field, State, Acc) ->
             DS = case FieldName of
                      refs ->
                          lists:map(fun({RefName, RefValue}) ->
@@ -368,8 +368,8 @@ generate_downstream_remove(Key, {_IndexPolicy, _DepPolicy, IndexTree}) ->
                      _ ->
                          generate_downstream_reset({FieldName, ResetOp}, FieldType, State)
                  end,
-            dict:store(Field, DS, Acc)
-        end, dict:new(), Entry),
+            maps:put(Field, DS, Acc)
+        end, maps:new(), Entry),
 
     {Key, DownstreamEffect};
 generate_downstream_remove(Key, _) ->
@@ -406,19 +406,19 @@ resolve_downstream(_, _) ->
     none.
 
 apply_update({bound_obj, Op}, Entry) ->
-    BObjCRDT = fetch_key_dict(?bound_obj_key, Entry, ?BOBJ_DT:new()),
+    BObjCRDT = fetch_map_key(?bound_obj_key, Entry, ?BOBJ_DT:new()),
     {ok, Upd} = ?BOBJ_DT:update(Op, BObjCRDT),
-    {ok, dict:store(?bound_obj_key, Upd, Entry)};
+    {ok, maps:put(?bound_obj_key, Upd, Entry)};
 apply_update({state, Op}, Entry) ->
-    StateCRDT = fetch_key_dict(?state_key, Entry, ?STATE_DT:new()),
+    StateCRDT = fetch_map_key(?state_key, Entry, ?STATE_DT:new()),
     {ok, Upd} = ?STATE_DT:update(Op, StateCRDT),
-    {ok, dict:store(?state_key, Upd, Entry)};
+    {ok, maps:put(?state_key, Upd, Entry)};
 apply_update({version, Op}, Entry) ->
-    VrsCRDT = fetch_key_dict(?version_key, Entry, ?VRS_DT:new()),
+    VrsCRDT = fetch_map_key(?version_key, Entry, ?VRS_DT:new()),
     {ok, Upd} = ?VRS_DT:update(Op, VrsCRDT),
-    {ok, dict:store(?version_key, Upd, Entry)};
+    {ok, maps:put(?version_key, Upd, Entry)};
 apply_update({refs, Ops}, Entry) when is_list(Ops) ->
-    Refs = fetch_key_dict(?refs_key, Entry, []),
+    Refs = fetch_map_key(?refs_key, Entry, []),
     NewRefs = lists:foldl(fun({RefName, Op}, AccRefs) ->
         State = case proplists:get_value(RefName, AccRefs) of
                     undefined -> ?REF_DT:new();
@@ -427,15 +427,15 @@ apply_update({refs, Ops}, Entry) when is_list(Ops) ->
         {ok, UpdatedState} = ?REF_DT:update(Op, State),
         lists:keystore(RefName, 1, AccRefs, {RefName, UpdatedState})
     end, Refs, Ops),
-    {ok, dict:store(?refs_key, NewRefs, Entry)};
+    {ok, maps:put(?refs_key, NewRefs, Entry)};
 apply_update({refs, {RefName, Op}}, Entry) ->
     apply_update({refs, [{RefName, Op}]}, Entry).
 
 is_bottom(Entry) ->
-    BoundObj = fetch_key_dict(?bound_obj_key, Entry, ?BOBJ_DT:new()),
-    State = fetch_key_dict(?state_key, Entry, ?STATE_DT:new()),
-    Version = fetch_key_dict(?version_key, Entry, ?VRS_DT:new()),
-    Refs = fetch_key_dict(?refs_key, Entry, []),
+    BoundObj = fetch_map_key(?bound_obj_key, Entry, ?BOBJ_DT:new()),
+    State = fetch_map_key(?state_key, Entry, ?STATE_DT:new()),
+    Version = fetch_map_key(?version_key, Entry, ?VRS_DT:new()),
+    Refs = fetch_map_key(?refs_key, Entry, []),
 
     is_bottom(?BOBJ_DT, BoundObj) andalso
     is_bottom(?STATE_DT, State) andalso
@@ -564,13 +564,13 @@ to_predicate(lessereq, Val1, Val2) -> Val1 =< Val2;
 to_predicate(equality, Val1, Val2) -> Val1 == Val2;
 to_predicate(notequality, Val1, Val2) -> Val1 /= Val2.
 
-fetch_key_dict(Key, Dict, Default) ->
-    case dict:find(Key, Dict) of
+fetch_map_key(Key, Dict, Default) ->
+    case maps:find(Key, Dict) of
         {ok, Value} -> Value;
         error -> Default
     end.
 
-fetch_key_tree(Key, Tree, Default) ->
+fetch_tree_key(Key, Tree, Default) ->
     case gb_trees:lookup(Key, Tree) of
         {value, Value} -> Value;
         none -> Default
