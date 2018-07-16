@@ -45,6 +45,7 @@
 -module(antidote_crdt_index_p).
 -behaviour(antidote_crdt).
 
+-define(POLICIES_DT, antidote_crdt_register_lww).
 -define(BOBJ_DT, antidote_crdt_register_lww).
 -define(STATE_DT, antidote_crdt_register_mv).
 -define(VRS_DT, antidote_crdt_register_lww).
@@ -80,7 +81,7 @@
               antidote_crdt_index_p_query/0]).
 
 -type antidote_crdt_index_p() :: {policy(), policy(), indexmap()}.
--type policy() :: add | remove.
+-type policy() :: term().
 -type entry() :: map().
 -type gb_tree_node() :: nil | {_, entry(), _, _}.
 -type indexmap() :: {non_neg_integer(), gb_tree_node()}.
@@ -109,7 +110,7 @@
                         {set, set_downstream()}.
 -type nested_downstream() :: {Key::term(), Op::term()}.
 -type remove_downstream() :: {Key::term(), none} | {Key::term(), map()}.
--type set_downstream() :: {index_policy, policy()} | {dep_policy, policy()}.
+-type set_downstream() :: {index_policy, Op::term()} | {dep_policy, Op::term()}.
 
 -type invalid_type() :: {error, wrong_type}.
 -type key_not_found() :: {error, key_not_found}.
@@ -122,15 +123,21 @@
 
 -spec new() -> antidote_crdt_index_p().
 new() ->
-    {undefined, undefined, gb_trees:empty()}.
+    {?POLICIES_DT:new(), ?POLICIES_DT:new(), gb_trees:empty()}.
 
 -spec new(policy(), policy()) -> antidote_crdt_index_p().
 new(IndexPolicy, DepPolicy) ->
-    {IndexPolicy, DepPolicy, gb_trees:empty()}.
+    NewRegister = ?POLICIES_DT:new(),
+    {ok, DS1} = ?POLICIES_DT:downstream({assign, IndexPolicy}, NewRegister),
+    {ok, DS2} = ?POLICIES_DT:downstream({assign, DepPolicy}, NewRegister),
+    {ok, IndexPolCRDT} = ?POLICIES_DT:update(DS1, NewRegister),
+    {ok, DepPolCRDT} = ?POLICIES_DT:update(DS2, NewRegister),
+
+    {IndexPolCRDT, DepPolCRDT, gb_trees:empty()}.
 
 -spec value(antidote_crdt_index_p()) -> value_output().
 value({IndexPolicy, DepPolicy, IndexTree}) ->
-    {IndexPolicy, DepPolicy, to_value(IndexTree)}.
+    {?POLICIES_DT:value(IndexPolicy), ?POLICIES_DT:value(DepPolicy), to_value(IndexTree)}.
 
 -spec value(antidote_crdt_index_p_query(), antidote_crdt_index_p()) -> value_output().
 value({range, {equality, Val}}, Index) ->
@@ -163,7 +170,7 @@ value({get, Key}, {_IndexPolicy, _DepPolicy, IndexTree}) ->
             end
     end;
 value({policies, {}}, {IndexPolicy, DepPolicy, _IndexTree}) ->
-    {IndexPolicy, DepPolicy}.
+    {?POLICIES_DT:value(IndexPolicy), ?POLICIES_DT:value(DepPolicy)}.
 
 -spec downstream(antidote_crdt_index_p_op(), antidote_crdt_index_p()) ->
     {ok, index_effect()} | invalid_type() | invalid_policy().
@@ -178,16 +185,20 @@ downstream({remove, Ops}, Index) when is_list(Ops) ->
 downstream({remove, Key}, Index) ->
     DownstreamOp = generate_downstream_remove(Key, Index),
     {ok, {remove, DownstreamOp}};
-downstream({set, {index_policy, NewIndexPolicy}}, {CurrIndexPolicy, _DepPolicy, _IndexTree}) ->
-    case set_policy(CurrIndexPolicy, NewIndexPolicy) of
-        error -> {error, {invalid_index_policy, NewIndexPolicy}};
-        _Else -> {ok, {set, {index_policy, NewIndexPolicy}}}
-    end;
-downstream({set, {dep_policy, NewDepPolicy}}, {_IndexPolicy, CurrDepPolicy, _IndexTree}) ->
-    case set_policy(CurrDepPolicy, NewDepPolicy) of
-        error -> {error, {invalid_dep_policy, NewDepPolicy}};
-        _Else -> {ok, {set, {dep_policy, NewDepPolicy}}}
-    end.
+downstream({set, {index_policy, IndexPolicyOp}}, {CurrIndexPolicy, _DepPolicy, _IndexTree}) ->
+    {ok, DS} = ?POLICIES_DT:downstream(IndexPolicyOp, CurrIndexPolicy),
+    {ok, {set, {index_policy, DS}}};
+    %case set_policy(CurrIndexPolicy, NewIndexPolicy) of
+    %    error -> {error, {invalid_index_policy, NewIndexPolicy}};
+    %    _Else -> {ok, {set, {index_policy, NewIndexPolicy}}}
+    %end;
+downstream({set, {dep_policy, DepPolicyOp}}, {_IndexPolicy, CurrDepPolicy, _IndexTree}) ->
+    {ok, DS} = ?POLICIES_DT:downstream(DepPolicyOp, CurrDepPolicy),
+    {ok, {set, {dep_policy, DS}}}.
+    %case set_policy(CurrDepPolicy, NewDepPolicy) of
+    %    error -> {error, {invalid_dep_policy, NewDepPolicy}};
+    %    _Else -> {ok, {set, {dep_policy, NewDepPolicy}}}
+    %end.
 
 -spec update(index_effect(), antidote_crdt_index_p()) -> {ok, antidote_crdt_index_p()}.
 update({update, {Key, Op}}, {IndexPolicy, DepPolicy, IndexTree}) ->
@@ -232,15 +243,17 @@ update({remove, {Key, Op}}, {IndexPolicy, DepPolicy, IndexTree}) ->
     end;
 update({remove, Ops}, Index) when is_list(Ops) ->
     apply_ops(Ops, Index);
-update({set, {index_policy, NewIndexPolicy}}, {_CurrIndexPolicy, DepPolicy, IndexTree}) ->
+update({set, {index_policy, IndexPolicyOp}}, {CurrIndexPolicy, DepPolicy, IndexTree}) ->
+    {ok, NewIndexPolicy} = ?POLICIES_DT:update(IndexPolicyOp, CurrIndexPolicy),
     {ok, {NewIndexPolicy, DepPolicy, IndexTree}};
-update({set, {dep_policy, NewDepPolicy}}, {IndexPolicy, _CurrDepPolicy, IndexTree}) ->
+update({set, {dep_policy, DepPolicyOp}}, {IndexPolicy, CurrDepPolicy, IndexTree}) ->
+    {ok, NewDepPolicy} = ?POLICIES_DT:update(DepPolicyOp, CurrDepPolicy),
     {ok, {IndexPolicy, NewDepPolicy, IndexTree}}.
 
 -spec equal(antidote_crdt_index_p(), antidote_crdt_index_p()) -> boolean().
 equal({IndexPolicy1, DepPolicy1, IndexTree1}, {IndexPolicy2, DepPolicy2, IndexTree2}) ->
-    IndexPolicy1 =:= IndexPolicy2 andalso
-    DepPolicy1 =:= DepPolicy2 andalso
+    ?POLICIES_DT:value(IndexPolicy1) =:= ?POLICIES_DT:value(IndexPolicy2) andalso
+    ?POLICIES_DT:value(DepPolicy1) =:= ?POLICIES_DT:value(DepPolicy2) andalso
     IndexTree1 =:= IndexTree2 andalso
     gb_trees:size(IndexTree1) =:= gb_trees:size(IndexTree2) andalso
     rec_equals(IndexTree1, IndexTree2).
@@ -269,10 +282,10 @@ is_operation(Operation) ->
             is_operation0(Op);
         {remove, {_Key, Op}} ->
             (is_operation0(Op) orelse Op == none);
-        {set, {index_policy, _}} ->
-            true;
-        {set, {dep_policy, _}} ->
-            true;
+        {set, {index_policy, Op}} ->
+            ?POLICIES_DT:is_operation(Op);
+        {set, {dep_policy, Op}} ->
+            ?POLICIES_DT:is_operation(Op);
         {OpType, Ops} when is_list(Ops) ->
             distinct([Key || {Key, _} <- Ops]) andalso
               lists:all(fun(Op) -> is_operation({OpType, Op}) end, Ops);
@@ -389,10 +402,10 @@ generate_downstream_reset(Op, StateDT, State) ->
             resolve_downstream(StateDT, State)
     end.
 
-set_policy(undefined, add) -> add;
-set_policy(undefined, remove) -> remove;
-set_policy(NewPolicy, NewPolicy) -> NewPolicy;
-set_policy(_CurrPolicy, _NewPolicy) -> error.
+%set_policy(undefined, add) -> add;
+%set_policy(undefined, remove) -> remove;
+%set_policy(NewPolicy, NewPolicy) -> NewPolicy;
+%set_policy(_CurrPolicy, _NewPolicy) -> error.
 
 %% A simple solver for CRDTs which do not have a reset operation.
 resolve_downstream(antidote_crdt_register_lww = Type, State) ->
@@ -596,9 +609,9 @@ update_entry_aux(Key, Op, Index) ->
     Index2.
 
 new_test() ->
-    ?assertEqual({undefined, undefined, gb_trees:empty()}, new()),
-    ?assertEqual({add, add, gb_trees:empty()}, new(add, add)),
-    ?assertEqual({add, remove, gb_trees:empty()}, new(add, remove)).
+    ?assertEqual({<<"">>, <<"">>, []}, value(new())),
+    ?assertEqual({add, add, []}, value(new(add, add))),
+    ?assertEqual({add, remove, []}, value(new(add, remove))).
 
 update_test() ->
     Index1 = new(add, add),
@@ -607,7 +620,7 @@ update_test() ->
     ?assertMatch({update, {key, {bound_obj, {_, BoundObj}}}}, DownstreamOp),
     {ok, Index2} = update(DownstreamOp, Index1),
 
-    {_, _, Tree} = value(Index2),
+    {add, add, Tree} = value(Index2),
     Entry = {BoundObj, [], <<>>, []},
     ?assertEqual([{key, Entry}], Tree).
 
@@ -616,10 +629,10 @@ update2_test() ->
     Index2 = update_entry_aux(key, {state, {assign, i}}, Index1),
     Index3 = update_entry_aux(key, {version, {assign, 5}}, Index1),
 
-    {_, _, Tree1} = value(Index2),
+    {<<"">>, <<"">>, Tree1} = value(Index2),
     Entry1 = {<<>>, [i], <<>>, []},
 
-    {_, _, Tree2} = value(Index3),
+    {<<"">>, <<"">>, Tree2} = value(Index3),
     Entry2 = {<<>>, [], 5, []},
 
     ?assertEqual([{key, Entry1}], Tree1),
@@ -627,12 +640,13 @@ update2_test() ->
 
 update3_test() ->
     Index1 = new(),
-    {ok, DownstreamOp} = downstream({set, {index_policy, add}}, Index1),
+    {ok, DownstreamOp} = downstream({set, {index_policy, {assign, add}}}, Index1),
     {ok, Index2} = update(DownstreamOp, Index1),
 
-    ?assertEqual({add, undefined}, value({policies, {}}, Index2)),
-    Response = downstream({set, {index_policy, remove}}, Index2),
-    ?assertMatch({error, _}, Response).
+    ?assertEqual({add, <<"">>}, value({policies, {}}, Index2)),
+    {ok, DownstreamOp2} = downstream({set, {index_policy, {assign, remove}}}, Index2),
+    {ok, Index3} = update(DownstreamOp2, Index2),
+    ?assertMatch({remove, <<"">>}, value({policies, {}}, Index3)).
 
 remove_test() ->
     Index1 = new(add, remove),
@@ -644,7 +658,7 @@ remove_test() ->
     {ok, DS} = downstream({remove, Removes}, Index4),
     {ok, Index5} = update(DS, Index4),
 
-    {_, _, Tree} = value(Index5),
+    {add, remove, Tree} = value(Index5),
     Entry = {<<>>, [d], <<>>, []},
     FinalRes = [{key2, Entry}],
     ?assertEqual(FinalRes, Tree).
@@ -729,6 +743,8 @@ is_operation_test() ->
     Op8 = {policies, {}},
     Op9 = {update, {k, {refs, {refname, {assign, refval}}}}},
     Op10 = {update, {k, {refs, [{refname, {assign, refval}}, {refname2, {assign, refval2}}]}}},
+    Op11 = {set, {index_policy, add}},
+    Op12 = {set, {dep_policy, {assign, remove}}},
 
     ?assertEqual(true, is_operation(Op1)),
     ?assertEqual(false, is_operation(Op2)),
@@ -739,6 +755,8 @@ is_operation_test() ->
     ?assertEqual(false, is_operation(Op7)),
     ?assertEqual(true, is_operation(Op8)),
     ?assertEqual(true, is_operation(Op9)),
-    ?assertEqual(true, is_operation(Op10)).
+    ?assertEqual(true, is_operation(Op10)),
+    ?assertEqual(false, is_operation(Op11)),
+    ?assertEqual(true, is_operation(Op12)).
 
 -endif.
