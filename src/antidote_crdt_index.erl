@@ -39,6 +39,8 @@
 -module(antidote_crdt_index).
 -behaviour(antidote_crdt).
 
+-define(BOBJ_DT, antidote_crdt_register_lww).
+
 -define(LOWER_BOUND_PRED, [greater, greatereq]).
 -define(UPPER_BOUND_PRED, [lesser, lessereq]).
 -define(WRONG_PRED(Preds), io_lib:format("Some of the predicates don't respect a range query: ~p", [Preds])).
@@ -68,7 +70,7 @@
 -type index_type() :: atom().
 -type gb_tree_node() :: nil | {_, _, _, _}.
 -type indexmap() :: {non_neg_integer(), gb_tree_node()}.
--type indirectionmap() :: dict:dict({Key::term(), Type::atom()}, NestedState::term()).
+-type indirectionmap() :: dict:dict(Key::term(), {Type::term(), NestedState::term()}).
 
 -type pred_type() :: greater | greatereq | lesser | lessereq | equality | notequality.
 -type pred_arg() :: number().
@@ -82,15 +84,15 @@
                                   {update, [nested_op()]} |
                                   {remove, remove_op()} |
                                   {remove, [remove_op()]}.
--type nested_op() :: {{Key::term(), Type::atom()}, Op::term()}.
+-type nested_op() :: {Type::atom(), Key::term(), Op::[term()]}.
 -type remove_op() :: {Type::atom(), Key::term()}.
 
 -type index_effect() :: {update, nested_downstream()} |
                         {update, [nested_downstream()]} |
                         {remove, remove_downstream()} |
                         {remove, [remove_downstream()]}.
--type nested_downstream() :: {Type::atom(), Key::term(), Op::term()}.
--type remove_downstream() :: {Type::atom(), Key::term(), none} | {Type::atom(), Key::term(), Op::term()}.
+-type nested_downstream() :: {Type::atom(), Key::term(), Op::[term()]}.
+-type remove_downstream() :: {Type::atom(), Key::term(), none} | {Type::atom(), Key::term(), Op::[term()]}.
 
 -type invalid_type() :: {error, wrong_type}.
 -type key_not_found() :: {error, key_not_found}.
@@ -142,27 +144,34 @@ value({get, Key}, {_Type, IndexTree, _Indirection}) ->
         none ->
             {error, key_not_found}
     end;
-value({lookup, Key}, {Type, _IndexTree, Indirection} = Index) ->
+value({lookup, Key}, {_Type, _IndexTree, Indirection} = Index) ->
     case dict:find(Key, Indirection) of
-        {ok, CRDTValue} ->
-            Value = Type:value(CRDTValue),
-            value({get, Value}, Index);
+        {ok, Entry} ->
+            {index_val, FieldType, FieldState} = entry_field(index_val, Entry),
+            Value = FieldType:value(FieldState),
+            value({get, calc_value(FieldType, Value)}, Index);
         error ->
             {error, key_not_found}
     end.
 
 -spec downstream(antidote_crdt_index_op(), antidote_crdt_index()) -> {ok, index_effect()} | invalid_type().
-downstream({update, {Type, Key, Op}}, {_Type, _IndexTree, Indirection} = Index) ->
+downstream({update, {Type, Key, Ops}}, {_Type, _IndexTree, Indirection} = Index) when is_list(Ops) ->
     case index_type(Index, Type) of
         Type ->
-            CurrentValue = case dict:is_key(Key, Indirection) of
-                               true ->
-                                   dict:fetch(Key, Indirection);
-                               false ->
-                                   Type:new()
-                           end,
-            {ok, DownstreamOp} = Type:downstream(Op, CurrentValue),
-            {ok, {update, {Type, Key, DownstreamOp}}};
+            Entry =
+                case dict:find(Key, Indirection) of
+                    {ok, State} ->
+                        State;
+                    error ->
+                        empty_map_entry(Type)
+                end,
+            DownstreamOps =
+                lists:map(fun({FieldName, Op}) ->
+                    {FieldName, FieldType, FieldState} = entry_field(FieldName, Entry),
+                    {ok, DownstreamOp} = FieldType:downstream(Op, FieldState),
+                    {FieldName, DownstreamOp}
+                end, Ops),
+            {ok, {update, {Type, Key, DownstreamOps}}};
         _Else ->
             {error, wrong_type}
     end;
@@ -175,38 +184,46 @@ downstream({remove, Ops}, Index) when is_list(Ops) ->
     {ok, {remove, lists:map(fun(Op) -> {ok, DSOp} = downstream({remove, Op}, Index), DSOp end, Ops)}}.
 
 -spec update(index_effect(), antidote_crdt_index()) -> {ok, antidote_crdt_index()}.
-update({update, {Type, Key, Op}}, {_Type, IndexTree, Indirection}) ->
-    {OldValue, NewValue} = apply_op(Key, Type, Op, Indirection),
-    case OldValue == NewValue of
+update({update, {Type, Key, Ops}}, {_Type, IndexTree, Indirection}) when is_list(Ops) ->
+    {OldEntry, NewEntry} = apply_op(Key, Type, Ops, Indirection),
+    case OldEntry == NewEntry of
         true ->
             {ok, {Type, IndexTree, Indirection}};
         false ->
-            NewIndirection = dict:store(Key, NewValue, Indirection),
+            NewIndirection = dict:store(Key, NewEntry, Indirection),
 
-            NewIndexTree = update_index(get_value(Type, OldValue), get_value(Type, NewValue), Key, IndexTree),
-            {ok, {Type, NewIndexTree, NewIndirection}}
-    end;
-update({update, Ops}, Index) ->
-    apply_ops(Ops, Index);
-update({remove, {_Type, _Key, none}}, Index) ->
-    {ok, Index};
-update({remove, {Type, Key, Op}}, {_Type, IndexTree, Indirection}) ->
-    {OldValue, NewValue} = apply_op(Key, Type, Op, Indirection),
-    case OldValue == NewValue of
-        true ->
-            {ok, {Type, IndexTree, Indirection}};
-        false ->
-            NewIndirection = dict:store(Key, NewValue, Indirection),
             NewIndexTree =
-                case is_bottom(Type, NewValue) of
+                case is_bottom(NewEntry) of
                     true ->
-                        remove_entry(get_value(Type, OldValue), Key, IndexTree);
+                        IndexTree;
                     false ->
-                        update_index(get_value(Type, OldValue), get_value(Type, NewValue), Key, IndexTree)
+                        update_index(get_value(OldEntry), get_value(NewEntry), IndexTree)
                 end,
             {ok, {Type, NewIndexTree, NewIndirection}}
     end;
-update({remove, Ops}, Index) ->
+update({update, Ops}, Index) when is_list(Ops) ->
+    apply_ops(Ops, Index);
+update({remove, {_Type, _Key, none}}, Index) ->
+    {ok, Index};
+update({remove, {Type, Key, Ops}}, {_Type, IndexTree, Indirection}) when is_list(Ops) ->
+    {OldEntry, NewEntry} = apply_op(Key, Type, Ops, Indirection),
+    case OldEntry == NewEntry of
+        true ->
+            {ok, {Type, IndexTree, Indirection}};
+        false ->
+            NewIndirection = dict:store(Key, NewEntry, Indirection),
+            NewIndexTree =
+                case is_bottom(NewEntry) of
+                    true ->
+                        {_, _, OldBObj} = entry_field(bound_obj, get_value(OldEntry)),
+                        {_, _, OldIndexVal} = entry_field(index_val, get_value(OldEntry)),
+                        remove_entry(OldIndexVal, OldBObj, IndexTree);
+                    false ->
+                        update_index(get_value(OldEntry), get_value(NewEntry), IndexTree)
+                end,
+            {ok, {Type, NewIndexTree, NewIndirection}}
+    end;
+update({remove, Ops}, Index) when is_list(Ops) ->
     apply_ops(Ops, Index).
 
 -spec equal(antidote_crdt_index(), antidote_crdt_index()) -> boolean().
@@ -214,7 +231,7 @@ equal({Type1, IndexTree1, Indirection1}, {Type2, IndexTree2, Indirection2}) ->
     Type1 =:= Type2 andalso
     IndexTree1 =:= IndexTree2 andalso
     dict:size(Indirection1) =:= dict:size(Indirection2) andalso
-    rec_equals(Type1, Indirection1, Indirection2).
+    rec_equals(Indirection1, Indirection2).
 
 -define(TAG, 101).
 -define(V1_VERS, 1).
@@ -230,23 +247,44 @@ from_binary(<<?TAG:8/integer, ?V1_VERS:8/integer, Bin/binary>>) ->
 -spec is_operation(term()) -> boolean().
 is_operation(Operation) ->
     case Operation of
-      {range, {_LowerPred, _UpperPred}} ->
-        true;
-      {get, _Key} ->
-        true;
-      {lookup, _Key} ->
-        true;
-      {update, {Type, _Key, Op}} ->
-        antidote_crdt:is_type(Type) andalso
-          Type:is_operation(Op);
-      {remove, {Type, _Key, Op}} ->
-        antidote_crdt:is_type(Type) andalso
-          (Type:is_operation(Op) orelse Op == none);
-      {OpType, Ops} when is_list(Ops) ->
-        distinct([Key || {Key, _} <- Ops]) andalso
-          lists:all(fun(Op) -> is_operation({OpType, Op}) end, Ops);
-      _ ->
-        false
+        {range, {_LowerPred, _UpperPred}} ->
+            true;
+        {get, _Key} ->
+            true;
+        {lookup, _Key} ->
+            true;
+        {update, {Type, _Key, Ops}} ->
+            EmptyEntry = empty_map_entry(Type),
+            try
+                antidote_crdt:is_type(Type) andalso
+                    lists:foldl(fun({FieldName, Op}, BoolAcc) ->
+                        {FieldName, FieldType, _} = entry_field(FieldName, EmptyEntry),
+                        BoolAcc andalso FieldType:is_operation(Op)
+                    end, true, Ops)
+            of
+                Result -> Result
+            catch
+                _:_ -> false
+            end;
+        {remove, {Type, _Key, Ops}} ->
+            EmptyEntry = empty_map_entry(Type),
+            try
+                antidote_crdt:is_type(Type) andalso
+                    (Ops == none orelse
+                    lists:foldl(fun({FieldName, Op}, BoolAcc) ->
+                        {FieldName, FieldType, _} = entry_field(FieldName, EmptyEntry),
+                        BoolAcc andalso (Op == none orelse FieldType:is_operation(Op))
+                    end, true, Ops))
+            of
+                Result -> Result
+            catch
+                _:_ -> false
+            end;
+        {OpType, Ops} when is_list(Ops) ->
+            distinct([Key || {Key, _} <- Ops]) andalso
+                lists:all(fun(Op) -> is_operation({OpType, Op}) end, Ops);
+        _ ->
+            false
     end.
 
 -spec require_state_downstream(term()) -> boolean().
@@ -261,20 +299,31 @@ index_type({Type, _IndexTree, _Indirection}, Default) ->
         undefined -> Default;
         Default -> Type;
         _Else -> undefined
-    end;
-index_type({_IndexTree, Indirection}, Default) ->
-    Keys = dict:fetch_keys(Indirection),
-    Types = lists:foldl(
-        fun({_Key, Type}, SetAcc) -> sets:add_element(Type, SetAcc) end,
-        sets:new(), Keys),
-    case sets:to_list(Types) of
-        [Type] -> Type;
-        [] -> Default;
-        _Else -> undefined
     end.
 
-update_index(OldEntryKey, NewEntryKey, EntryValue, IndexTree) ->
-    Removed = remove_entry(OldEntryKey, EntryValue, IndexTree),
+empty_map_entry(Type) ->
+    [{bound_obj, ?BOBJ_DT, ?BOBJ_DT:new()}, {index_val, Type, Type:new()}].
+
+entry_field(FieldName, Entry) ->
+    case lists:keyfind(FieldName, 1, Entry) of
+        false -> {FieldName, undefined, undefined};
+        Tuple -> Tuple
+    end.
+
+%%entry_value(FieldName, Entry) ->
+%%    case entry_field(FieldName, Entry) of
+%%        {undefined, undefined, undefined} ->
+%%            undefined;
+%%        {FieldName, FieldType, FieldState} ->
+%%            FieldType:value(FieldState)
+%%    end.
+
+update_index(OldEntry, NewEntry, IndexTree) ->
+    {_, _, OldEntryValue} = entry_field(bound_obj, OldEntry),
+    {_, _, OldEntryKey} = entry_field(index_val, OldEntry),
+    {_, _, NewEntryValue} = entry_field(bound_obj, NewEntry),
+    {_, _, NewEntryKey} = entry_field(index_val, NewEntry),
+    Removed = remove_entry(OldEntryKey, OldEntryValue, IndexTree),
 
     %% The insert is much slower than the update in gb_trees.
     %% That's why we first lookup for an entry and, if it
@@ -282,11 +331,15 @@ update_index(OldEntryKey, NewEntryKey, EntryValue, IndexTree) ->
     %% an already existing entry.
     case gb_trees:lookup(NewEntryKey, Removed) of
          {value, Set2} ->
-             gb_trees:update(NewEntryKey, ordsets:add_element(EntryValue, Set2), Removed);
+             gb_trees:update(NewEntryKey, ordsets:add_element(NewEntryValue, Set2), Removed);
          none ->
-             gb_trees:insert(NewEntryKey, ordsets:add_element(EntryValue, ordsets:new()), Removed)
+             gb_trees:insert(NewEntryKey, ordsets:add_element(NewEntryValue, ordsets:new()), Removed)
     end.
 
+remove_entry(undefined, _, IndexTree) ->
+    IndexTree;
+remove_entry(_, undefined, IndexTree) ->
+    IndexTree;
 remove_entry(EntryKey, EntryValue, IndexTree) ->
     case gb_trees:lookup(EntryKey, IndexTree) of
         {value, Set} ->
@@ -306,64 +359,93 @@ remove_entry(EntryKey, EntryValue, IndexTree) ->
             IndexTree
     end.
 
-apply_op(Key, Type, Op, Indirection) ->
+apply_op(Key, Type, Ops, Indirection) ->
     case dict:find(Key, Indirection) of
-        {ok, Value} ->
-            {ok, ValueUpdated} = Type:update(Op, Value),
-            {Value, ValueUpdated};
+        {ok, Entry} ->
+            NewStates =
+                lists:map(fun({FieldName, Op}) ->
+                    {FieldName, FieldType, FieldState} = entry_field(FieldName, Entry),
+                    {ok, UpdatedState} = FieldType:update(Op, FieldState),
+                    {FieldName, FieldType, UpdatedState}
+                end, Ops),
+
+            {Entry, NewStates};
         error ->
-            NewCRDT = Type:new(),
-            {ok, NewValueUpdated} = Type:update(Op, NewCRDT),
-            {undefined, NewValueUpdated}
+            EmptyEntry = empty_map_entry(Type),
+            NewStates =
+                lists:map(fun({FieldName, Op}) ->
+                    {FieldName, FieldType, FieldState} = entry_field(FieldName, EmptyEntry),
+                    {ok, UpdatedState} = FieldType:update(Op, FieldState),
+                    {FieldName, FieldType, UpdatedState}
+                end, Ops),
+
+            {undefined, NewStates}
     end.
 
 generate_downstream_remove({Type, Key}, {Type, _IndexTree, Indirection}) ->
-    CurrentValue =
-        case dict:is_key(Key, Indirection) of
-            true ->
-                dict:fetch(Key, Indirection);
-            false ->
-                Type:new()
+    Entry =
+        case dict:find(Key, Indirection) of
+            {ok, State} ->
+                State;
+            error ->
+                empty_map_entry(Type)
         end,
-    DownstreamEffect =
-        case Type:is_operation({reset, {}}) of
-            true ->
-                {ok, DownS} = Type:downstream({reset, {}}, CurrentValue),
-                DownS;
-            false ->
-                resolve_downstream(Type, CurrentValue)
-        end,
-    {Type, Key, DownstreamEffect};
+
+    DownstreamOps =
+        lists:map(fun({FieldName, FieldType, FieldState}) ->
+            DownstreamEffect = resolve_downstream(FieldType, FieldState),
+            {FieldName, DownstreamEffect}
+        end, Entry),
+
+    {Type, Key, DownstreamOps};
 generate_downstream_remove({Type, Key}, _) ->
     {Type, Key, none}.
 
+resolve_downstream(Type, State) ->
+    case Type:is_operation({reset, {}}) of
+        true ->
+            {ok, DownS} = Type:downstream({reset, {}}, State),
+            DownS;
+        false ->
+            resolve_downstream0(Type, State)
+    end.
+
 %% A simple solver for CRDTs which do not have a reset operation.
-resolve_downstream(antidote_crdt_register_lww = Type, State) ->
+resolve_downstream0(antidote_crdt_register_lww = Type, State) ->
     {ok, DS} = Type:downstream({assign, <<>>}, State),
     DS;
 %% This assumes there's only one actor updating the counter.
-resolve_downstream(antidote_crdt_counter_b = Type, State) ->
+resolve_downstream0(antidote_crdt_counter_b = Type, State) ->
     CounterV = calc_value(Type, Type:value(State)),
     {ok, DS} = Type:downstream({decrement, {CounterV, term}}, State),
     DS;
-resolve_downstream(antidote_crdt_counter_pn = Type, State) ->
+resolve_downstream0(antidote_crdt_counter_pn = Type, State) ->
     CounterV = Type:value(State),
     {ok, DS} = Type:downstream({decrement, CounterV}, State),
     DS;
-resolve_downstream(_, _) ->
+resolve_downstream0(_, _) ->
     none.
 
-is_bottom(Type, State) ->
+is_bottom(Entry) ->
+    lists:foldl(fun({_FieldName, FieldType, FieldState}, BoolAcc) ->
+        BoolAcc orelse is_bottom0(FieldType, FieldState)
+    end, false, Entry).
+
+is_bottom0(Type, State) ->
     Val1 = calc_value(Type, Type:value(State)),
     Val2 = calc_value(Type, Type:value(Type:new())),
     (erlang:function_exported(Type, is_bottom, 1) andalso Type:is_bottom(State))
         orelse Val1 == Val2.
 
-get_value(_Type, undefined) ->
-    undefined;
-get_value(Type, CRDTValue) ->
-    Value = Type:value(CRDTValue),
-    calc_value(Type, Value).
+get_value(undefined) ->
+    EmptyBObj = {bound_obj, undefined, undefined},
+    EmptyIndexVal = {index_val, undefined, undefined},
+    [EmptyBObj, EmptyIndexVal];
+get_value(State) ->
+    lists:map(fun({FieldName, FieldType, FieldState}) ->
+        Value = FieldType:value(FieldState),
+        {FieldName, FieldType, calc_value(FieldType, Value)}
+    end, State).
 
 %% A special case for a bounded counter, where the value of an index entry
 %% supported by this CRDT corresponds to the difference between the sum of
@@ -386,18 +468,25 @@ apply_ops([Op | Rest], Index) ->
     {ok, Index2} = update(Op, Index),
     apply_ops(Rest, Index2).
 
-rec_equals(Type, Indirection1, Indirection2) ->
+rec_equals(Indirection1, Indirection2) ->
     IndList1 = dict:to_list(Indirection1),
     IndList2 = dict:to_list(Indirection2),
-    Remaining = lists:dropwhile(fun({Key, Value}) ->
-        case proplists:lookup(Key, IndList2) of
-            none ->
-                false;
-            {Key, Value2} ->
-                Type:equal(Value, Value2)
-        end
-    end, IndList1),
+    Remaining =
+        lists:dropwhile(fun({Key, Value}) ->
+            case proplists:lookup(Key, IndList2) of
+                none ->
+                    false;
+                {Key, Value2} ->
+                    is_equal(Value, Value2)
+            end
+        end, IndList1),
     length(Remaining) =:= 0.
+
+is_equal(Entry1, Entry2) ->
+    lists:foldl(fun({FieldName, FieldType, FieldState}, BoolAcc) ->
+        {_, _, OtherState} = entry_field(FieldName, Entry2),
+        BoolAcc andalso FieldType:equal(FieldState, OtherState)
+    end, true, Entry1).
 
 distinct([]) ->
     true;
@@ -492,52 +581,58 @@ new_test() ->
 
 update_test() ->
     Index1 = new(antidote_crdt_register_lww),
-    {ok, DownstreamOp} = downstream({update, {antidote_crdt_register_lww, key1, {assign, "col"}}}, Index1),
-    ?assertMatch({update, {antidote_crdt_register_lww, key1, {_TS, "col"}}}, DownstreamOp),
+    Update1 = [{bound_obj, {assign, bobj1}}, {index_val, {assign, "col"}}],
+    {ok, DownstreamOp} = downstream({update, {antidote_crdt_register_lww, key1, Update1}}, Index1),
+    ?assertMatch({update, {antidote_crdt_register_lww, key1,
+        [{bound_obj, {_TS1, bobj1}}, {index_val, {_TS2, "col"}}]}}, DownstreamOp),
     {ok, Index2} = update(DownstreamOp, Index1),
-    Set = ordsets:add_element(key1, ordsets:new()),
-    ?assertEqual([{"col", Set}], value(Index2)).
+    ?assertEqual([{"col", [bobj1]}], value(Index2)).
 
 update2_test() ->
     Index1 = new(),
-    Index2 = update_entry_aux(antidote_crdt_set_aw, key1, {add, <<"elem">>}, Index1),
-    Index3 = update_entry_aux(antidote_crdt_counter_pn, key1, {increment, 5}, Index1),
+    Update1 = [{bound_obj, {assign, bobj1}}, {index_val, {add, <<"elem">>}}],
+    Update2 = [{bound_obj, {assign, bobj1}}, {index_val, {increment, 5}}],
+    Index2 = update_entry_aux(antidote_crdt_set_aw, key1, Update1, Index1),
+    Index3 = update_entry_aux(antidote_crdt_counter_pn, key1, Update2, Index1),
 
-    Set = ordsets:add_element(key1, ordsets:new()),
-
-    ?assertEqual([{[<<"elem">>], Set}], value(Index2)),
-    ?assertEqual([{5, Set}], value(Index3)).
+    ?assertEqual([{[<<"elem">>], [bobj1]}], value(Index2)),
+    ?assertEqual([{5, [bobj1]}], value(Index3)).
 
 update3_test() ->
     Index1 = new(),
-    Index2 = update_entry_aux(antidote_crdt_register_lww, key1, {assign, "col"}, Index1),
-    Response = downstream({update, {antidote_crdt_counter_pn, key2, {assign, 2}}}, Index2),
+    Update1 = [{bound_obj, {assign, bobj1}}, {index_val, {assign, "col"}}],
+    Update2 = [{bound_obj, {assign, bobj2}}, {index_val, {assign, 2}}],
+    Index2 = update_entry_aux(antidote_crdt_register_lww, key1, Update1, Index1),
+    Response = downstream({update, {antidote_crdt_counter_pn, key2, Update2}}, Index2),
     ?assertEqual({error, wrong_type}, Response).
 
 remove_test() ->
     RegType = antidote_crdt_register_lww,
     Index1 = new(RegType),
-    Index2 = update_entry_aux(RegType, key1, {assign, "col"}, Index1),
-    Index3 = update_entry_aux(RegType, key2, {assign, "col2"}, Index2),
-    Index4 = update_entry_aux(RegType, key3, {assign, "col"}, Index3),
+    Update1 = [{bound_obj, {assign, bobj1}}, {index_val, {assign, "col"}}],
+    Update2 = [{bound_obj, {assign, bobj2}}, {index_val, {assign, "col2"}}],
+    Update3 = [{bound_obj, {assign, bobj3}}, {index_val, {assign, "col"}}],
+    Index2 = update_entry_aux(RegType, key1, Update1, Index1),
+    Index3 = update_entry_aux(RegType, key2, Update2, Index2),
+    Index4 = update_entry_aux(RegType, key3, Update3, Index3),
 
-    Removes = [
-        {RegType, key1},
-        {RegType, key3}
-    ],
+    Removes = [{RegType, key1}, {RegType, key3}],
     {ok, DS} = downstream({remove, Removes}, Index4),
     {ok, Index5} = update(DS, Index4),
-    FinalRes = [{"col2", [key2]}],
+    FinalRes = [{"col2", [bobj2]}],
     ?assertEqual(FinalRes, value(Index5)).
 
 concurrent_test() ->
     RegType = antidote_crdt_register_lww,
     Index1 = new(RegType),
-    Index2 = update_entry_aux(RegType, key1, {assign, "col"}, Index1),
-    Index3 = update_entry_aux(RegType, key2, {assign, "col2"}, Index2),
+    Update1 = [{bound_obj, {assign, bobj1}}, {index_val, {assign, "col"}}],
+    Update2 = [{bound_obj, {assign, bobj2}}, {index_val, {assign, "col2"}}],
+    Index2 = update_entry_aux(RegType, key1, Update1, Index1),
+    Index3 = update_entry_aux(RegType, key2, Update2, Index2),
 
     %% Node 1
-    {ok, DownSN1} = downstream({update, {RegType, key2, {assign, "col"}}}, Index3),
+    Update3 = [{bound_obj, {assign, bobj2}}, {index_val, {assign, "col"}}],
+    {ok, DownSN1} = downstream({update, {RegType, key2, Update3}}, Index3),
     {ok, IndexN1} = update(DownSN1, Index3),
 
     %% Node 2
@@ -545,7 +640,8 @@ concurrent_test() ->
     {ok, IndexN2} = update(DownSN2, Index3),
 
     %% Node 3
-    {ok, DownSN3} = downstream({update, {RegType, key3, {assign, "col2"}}}, Index3),
+    Update4 = [{bound_obj, {assign, bobj3}}, {index_val, {assign, "col2"}}],
+    {ok, DownSN3} = downstream({update, {RegType, key3, Update4}}, Index3),
     {ok, IndexN3} = update(DownSN3, Index3),
 
     %% Merge
@@ -558,18 +654,20 @@ concurrent_test() ->
     {ok, MIndexN3_1} = update(DownSN1, IndexN3),
     {ok, MIndexN3_2} = update(DownSN2, MIndexN3_1),
 
-    Set1 = [key1],
-    Set2 = [key3],
-    FinalRes = [{"col", Set1}, {"col2", Set2}],
+    FinalRes = [{"col", [bobj1]}, {"col2", [bobj3]}],
     ?assertEqual(FinalRes, value(MIndexN1_2)),
     ?assertEqual(FinalRes, value(MIndexN2_2)),
     ?assertEqual(FinalRes, value(MIndexN3_2)).
 
 equal_test() ->
     Index1 = new(),
-    {ok, DownstreamOp1} = downstream({update, {antidote_crdt_register_lww, key1, {assign, "col1"}}}, Index1),
-    {ok, DownstreamOp2} = downstream({update, {antidote_crdt_register_lww, key1, {assign, "col2"}}}, Index1),
-    {ok, DownstreamOp3} = downstream({update, {antidote_crdt_counter_pn, key1, {increment, 1}}}, Index1),
+    Update1 = [{bound_obj, {assign, bobj1}}, {index_val, {assign, "col1"}}],
+    Update2 = [{bound_obj, {assign, bobj1}}, {index_val, {assign, "col2"}}],
+    Update3 = [{bound_obj, {assign, bobj1}}, {index_val, {increment, 1}}],
+
+    {ok, DownstreamOp1} = downstream({update, {antidote_crdt_register_lww, key1, Update1}}, Index1),
+    {ok, DownstreamOp2} = downstream({update, {antidote_crdt_register_lww, key1, Update2}}, Index1),
+    {ok, DownstreamOp3} = downstream({update, {antidote_crdt_counter_pn, key1, Update3}}, Index1),
     {ok, Index2} = update(DownstreamOp1, Index1),
     {ok, Index3} = update(DownstreamOp2, Index1),
     {ok, Index4} = update(DownstreamOp3, Index1),
@@ -581,27 +679,33 @@ equal_test() ->
 
 range_test() ->
     Index1 = new(),
+    GenerateUpd =
+        fun(Val) ->
+            [{bound_obj, {assign, list_to_atom("bobj" ++ integer_to_list(Val))}}, {index_val, {assign, Val}}]
+        end,
+
     Updates = [
-        {antidote_crdt_register_lww, "col1", {assign, 1}}, {antidote_crdt_register_lww, "col2", {assign, 2}},
-        {antidote_crdt_register_lww, "col3", {assign, 3}}, {antidote_crdt_register_lww, "col4", {assign, 4}},
-        {antidote_crdt_register_lww, "col5", {assign, 5}}, {antidote_crdt_register_lww, "col6", {assign, 6}}
+        {antidote_crdt_register_lww, "col1", GenerateUpd(1)}, {antidote_crdt_register_lww, "col2", GenerateUpd(2)},
+        {antidote_crdt_register_lww, "col3", GenerateUpd(3)}, {antidote_crdt_register_lww, "col4", GenerateUpd(4)},
+        {antidote_crdt_register_lww, "col5", GenerateUpd(5)}, {antidote_crdt_register_lww, "col6", GenerateUpd(6)}
     ],
     {ok, DownstreamOp1} = downstream({update, Updates}, Index1),
     {ok, Index2} = update(DownstreamOp1, Index1),
     LowerPred1 = {greatereq, 3},
     UpperPred1 = {lesser, 6},
     ?assertEqual([], value({range, {LowerPred1, UpperPred1}}, Index1)),
-    ?assertEqual([{3, ["col3"]}, {4, ["col4"]}, {5, ["col5"]}], value({range, {LowerPred1, UpperPred1}}, Index2)).
+    ?assertEqual([{3, [bobj3]}, {4, [bobj4]}, {5, [bobj5]}], value({range, {LowerPred1, UpperPred1}}, Index2)).
 
 is_operation_test() ->
-    Op1 = {update, {antidote_crdt_register_lww, k, {assign, v}}},
-    Op2 = {remove, {antidote_crdt_flag_ew, k, {enable, {}}}},
-    Op3 = {update, {antidote_crdt_counter_pn, k, {increment, 1}}},
+    Op1 = {update, {antidote_crdt_register_lww, k, [{index_val, {assign, v}}]}},
+    Op2 = {remove, {antidote_crdt_flag_ew, k, [{index_val, {enable, {}}}]}},
+    Op3 = {update, {antidote_crdt_counter_pn, k, [{index_val, {increment, 1}}]}},
     Op4 = {remove, {antidote_crdt_register_lww, k, none}},
-    Op5 = {update, {antidote_crdt_set_aw, k, {assign, v}}},
+    Op5 = {update, {antidote_crdt_set_aw, k, [{index_val, {assign, v}}]}},
     Op6 = {range, pred1, pred2},
     Op7 = {get, key},
     Op8 = {lookup, key},
+    Op9 = {update, {antidote_crdt_register_lww, k, {assign, v}}},
 
     ?assertEqual(true, is_operation(Op1)),
     ?assertEqual(true, is_operation(Op2)),
@@ -610,6 +714,7 @@ is_operation_test() ->
     ?assertEqual(false, is_operation(Op5)),
     ?assertEqual(false, is_operation(Op6)),
     ?assertEqual(true, is_operation(Op7)),
-    ?assertEqual(true, is_operation(Op8)).
+    ?assertEqual(true, is_operation(Op8)),
+    ?assertEqual(false, is_operation(Op9)).
 
 -endif.
