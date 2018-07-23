@@ -175,6 +175,8 @@ downstream({update, {Type, Key, Ops}}, {_Type, _IndexTree, Indirection} = Index)
         _Else ->
             {error, wrong_type}
     end;
+downstream({update, {Type, Key, Op}}, Index) ->
+    downstream({update, {Type, Key, [Op]}}, Index);
 downstream({update, Ops}, Index) when is_list(Ops) ->
     {ok, {update, lists:map(fun(Op) -> {ok, DSOp} = downstream({update, Op}, Index), DSOp end, Ops)}};
 downstream({remove, {Type, Key}}, Index) ->
