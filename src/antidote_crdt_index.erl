@@ -255,7 +255,7 @@ is_operation(Operation) ->
             true;
         {lookup, _Key} ->
             true;
-        {update, {Type, _Key, Ops}} ->
+        {update, {Type, _Key, Ops}} when is_list(Ops) ->
             EmptyEntry = empty_map_entry(Type),
             try
                 antidote_crdt:is_type(Type) andalso
@@ -268,6 +268,8 @@ is_operation(Operation) ->
             catch
                 _:_ -> false
             end;
+        {update, {Type, Key, Op}} ->
+            is_operation({update, {Type, Key, [Op]}});
         {remove, {Type, _Key, Ops}} ->
             EmptyEntry = empty_map_entry(Type),
             try
