@@ -1,8 +1,12 @@
 %% -------------------------------------------------------------------
 %%
-%% crdt_antidote_crdt_set_aw: A convergent, replicated, operation based observe remove set
-%%
-%% Copyright (c) 2007-2012 Basho Technologies, Inc.  All Rights Reserved.
+%% Copyright <2013-2018> <
+%%  Technische Universität Kaiserslautern, Germany
+%%  Université Pierre et Marie Curie / Sorbonne-Université, France
+%%  Universidade NOVA de Lisboa, Portugal
+%%  Université catholique de Louvain (UCL), Belgique
+%%  INESC TEC, Portugal
+%% >
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -14,10 +18,12 @@
 %% Unless required by applicable law or agreed to in writing,
 %% software distributed under the License is distributed on an
 %% "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-%% KIND, either express or implied.  See the License for the
+%% KIND, either expressed or implied.  See the License for the
 %% specific language governing permissions and limitations
 %% under the License.
 %%
+%% List of the contributors to the development of Antidote: see AUTHORS file.
+%% Description and complete License: see LICENSE file.
 %% -------------------------------------------------------------------
 
 %% @doc
@@ -134,8 +140,7 @@ equal(Set_awA, Set_awB) ->
     % Everything inside is ordered, so this should work
     Set_awA == Set_awB.
 
--include_lib("riak_dt/include/riak_dt_tags.hrl").
--define(TAG, ?DT_ORSET_TAG).
+-define(TAG, 76). %?DT_ORSET_TAG from riak_dt
 -define(V1_VERS, 1).
 
 -spec to_binary(antidote_crdt_set_aw()) -> binary_antidote_crdt_set_aw().

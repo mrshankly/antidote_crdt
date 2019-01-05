@@ -1,12 +1,12 @@
 # Antidote CRDT library
-[![Build Status](https://travis-ci.org/SyncFree/antidote_crdt.svg?branch=master)](https://travis-ci.org/SyncFree/antidote_crdt)
+[![Build Status](https://travis-ci.org/AntidoteDB/antidote_crdt.svg?branch=master)](https://travis-ci.org/AntidoteDB/antidote_crdt)
 
 Operation based CRDT implementations to use with Antidote.
 
 # API
 
 The `antidote_crdt` module provides the API below.
-For a more detailed description of the different data types, the [Antidote Documentation](http://syncfree.github.io/antidote/crdts.html) provides more information.
+For a more detailed description of the different data types, the [Antidote Documentation](https://antidotedb.gitbook.io/documentation/api/datatypes) provides more information.
 
 ```erlang
 % The CRDTs supported by Antidote:
@@ -24,11 +24,10 @@ For a more detailed description of the different data types, the [Antidote Docum
     | antidote_crdt_map_go          % Grow Only Map aka G-Map
     | antidote_crdt_map_rr.         % Recursive Resets Map aka RR-Map
 
-% Note: the crdt and effect types are not correct, the tags just help to find errors
 % The State of a CRDT:
--opaque crdt() :: ...
+-type crdt() :: ...
 % The downstream effect, which has to be applied at each replica
--opaque effect() :: ...
+-type effect() :: ...
 % The update operation, consisting of operation name and parameters
 % (e.g. {increment, 1} to increment a counter by one)
 -type update() :: {atom(), term()}.

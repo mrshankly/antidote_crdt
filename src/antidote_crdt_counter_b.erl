@@ -1,3 +1,31 @@
+%% -------------------------------------------------------------------
+%%
+%% Copyright <2013-2018> <
+%%  Technische Universität Kaiserslautern, Germany
+%%  Université Pierre et Marie Curie / Sorbonne-Université, France
+%%  Universidade NOVA de Lisboa, Portugal
+%%  Université catholique de Louvain (UCL), Belgique
+%%  INESC TEC, Portugal
+%% >
+%%
+%% This file is provided to you under the Apache License,
+%% Version 2.0 (the "License"); you may not use this file
+%% except in compliance with the License.  You may obtain
+%% a copy of the License at
+%%
+%%   http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing,
+%% software distributed under the License is distributed on an
+%% "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+%% KIND, either expressed or implied.  See the License for the
+%% specific language governing permissions and limitations
+%% under the License.
+%%
+%% List of the contributors to the development of Antidote: see AUTHORS file.
+%% Description and complete License: see LICENSE file.
+
+%% -------------------------------------------------------------------
 %% -*- coding: utf-8 -*-
 %% --------------------------------------------------------------------------
 %%
@@ -42,13 +70,13 @@
 
 -export_type([antidote_crdt_counter_b/0, binary_antidote_crdt_counter_b/0, antidote_crdt_counter_b_op/0, id/0]).
 
--opaque antidote_crdt_counter_b() :: {orddict:orddict(), orddict:orddict()}.
+-type antidote_crdt_counter_b() :: {orddict:orddict(), orddict:orddict()}.
 -type binary_antidote_crdt_counter_b() :: binary().
 -type antidote_crdt_counter_b_op() :: antidote_crdt_counter_b_anon_op() | antidote_crdt_counter_b_src_op().
 -type antidote_crdt_counter_b_anon_op() :: {transfer, {pos_integer(), id(), id()}} |
     {increment, {pos_integer(), id()}} | {decrement, {pos_integer(), id()}}.
 -type antidote_crdt_counter_b_src_op() :: {antidote_crdt_counter_b_anon_op(), id()}.
--opaque id() :: term. %% A replica's identifier.
+-type id() :: term(). %% A replica's identifier.
 
 %% @doc Return a new, empty `antidote_crdt_counter_b()'.
 -spec new() -> antidote_crdt_counter_b().
