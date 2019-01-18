@@ -41,6 +41,8 @@
 %% a register CRDT that stores the AntidoteDB key, respectively.
 %%
 %% This data type uses the Erlang's gb_trees to store index entries.
+%% It was specially designed to support the Antidote Query Language
+%% (AQL) system.
 %% -------------------------------------------------------------------
 
 -module(antidote_crdt_index_p).

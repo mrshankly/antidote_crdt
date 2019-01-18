@@ -28,7 +28,7 @@
 
 %% -------------------------------------------------------------------
 %% @author pedrolopes
-%% @doc module antidote_crdt_index - An index CRDT
+%% @doc module antidote_crdt_index_s - A secondary index CRDT
 %%
 %% An operation-based CRDT that serves as an index, mapping raw values
 %% to AntidoteDB keys. It also exports update operations to add and
@@ -42,9 +42,11 @@
 %%
 %% This data type uses the Erlang's gb_trees to store index entries
 %% and a dictionary to store data from the indirection map.
+%% It was specially designed to support the Antidote Query Language
+%% (AQL) system.
 %% -------------------------------------------------------------------
 
--module(antidote_crdt_index).
+-module(antidote_crdt_index_s).
 -behaviour(antidote_crdt).
 
 -define(LOWER_BOUND_PRED, [greater, greatereq]).
@@ -67,11 +69,11 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--export_type([antidote_crdt_index/0,
-              antidote_crdt_index_op/0,
-              antidote_crdt_index_query/0]).
+-export_type([antidote_crdt_index_s/0,
+              antidote_crdt_index_s_op/0,
+              antidote_crdt_index_s_query/0]).
 
--type antidote_crdt_index() :: {indexmap(), indirectionmap()}.
+-type antidote_crdt_index_s() :: {indexmap(), indirectionmap()}.
 -type gb_tree_node() :: nil | {_, _, _, _}.
 -type indexmap() :: {non_neg_integer(), gb_tree_node()}.
 -type indirectionmap() :: dict:dict(Key::term(), [{FieldName::atom(), FieldType::atom(), FieldState::term()}]).
@@ -80,14 +82,14 @@
 -type pred_arg() :: number().
 -type predicate() :: {pred_type(), pred_arg()} | infinity.
 
--type antidote_crdt_index_query() :: {range, {predicate(), predicate()} | predicate()} |
-                                     {get, term()} |
-                                     {lookup, term()}.
+-type antidote_crdt_index_s_query() :: {range, {predicate(), predicate()} | predicate()} |
+                                       {get, term()} |
+                                       {lookup, term()}.
 
--type antidote_crdt_index_op() :: {update, nested_op()} |
-                                  {update, [nested_op()]} |
-                                  {remove, remove_op()} |
-                                  {remove, [remove_op()]}.
+-type antidote_crdt_index_s_op() :: {update, nested_op()} |
+                                    {update, [nested_op()]} |
+                                    {remove, remove_op()} |
+                                    {remove, [remove_op()]}.
 -type nested_op() :: {Key::term(), Op::[term()]} | {Key::term(), Op::term()}.
 -type remove_op() :: {Key::term()}.
 
@@ -104,15 +106,15 @@
                         key_not_found() |
                         wrong_predicate().
 
--spec new() -> antidote_crdt_index().
+-spec new() -> antidote_crdt_index_s().
 new() ->
   {gb_trees:empty(), dict:new()}.
 
--spec value(antidote_crdt_index()) -> value_output().
+-spec value(antidote_crdt_index_s()) -> value_output().
 value({IndexTree, _Indirection}) ->
   gb_trees:to_list(IndexTree).
 
--spec value(antidote_crdt_index_query(), antidote_crdt_index()) -> value_output().
+-spec value(antidote_crdt_index_s_query(), antidote_crdt_index_s()) -> value_output().
 value({range, {equality, Val}}, Index) ->
   value({get, Val}, Index);
 value({range, {notequality, _Val} = Pred}, {IndexTree, _Indirection}) ->
@@ -152,7 +154,7 @@ value({lookup, Key}, {_IndexTree, Indirection} = Index) ->
       {error, key_not_found}
   end.
 
--spec downstream(antidote_crdt_index_op(), antidote_crdt_index()) -> {ok, index_effect()}.
+-spec downstream(antidote_crdt_index_s_op(), antidote_crdt_index_s()) -> {ok, index_effect()}.
 downstream({update, {Key, Ops}}, {_IndexTree, Indirection}) when is_list(Ops) ->
   Entry =
     case dict:find(Key, Indirection) of
@@ -178,7 +180,7 @@ downstream({remove, Key}, Index) ->
   DownstreamOp = generate_downstream_remove(Key, Index),
   {ok, {remove, DownstreamOp}}.
 
--spec update(index_effect(), antidote_crdt_index()) -> {ok, antidote_crdt_index()}.
+-spec update(index_effect(), antidote_crdt_index_s()) -> {ok, antidote_crdt_index_s()}.
 update({update, {Key, Ops}}, {IndexTree, Indirection}) when is_list(Ops) ->
   {OldEntry, NewEntry} = apply_op(Key, Ops, Indirection),
   case OldEntry == NewEntry of
@@ -220,7 +222,7 @@ update({remove, {Key, Ops}}, {IndexTree, Indirection}) when is_list(Ops) ->
 update({remove, Ops}, Index) when is_list(Ops) ->
   apply_ops(Ops, Index).
 
--spec equal(antidote_crdt_index(), antidote_crdt_index()) -> boolean().
+-spec equal(antidote_crdt_index_s(), antidote_crdt_index_s()) -> boolean().
 equal({IndexTree1, Indirection1}, {IndexTree2, Indirection2}) ->
   IndexTree1 =:= IndexTree2 andalso
     dict:size(Indirection1) =:= dict:size(Indirection2) andalso
@@ -229,11 +231,11 @@ equal({IndexTree1, Indirection1}, {IndexTree2, Indirection2}) ->
 -define(TAG, 101).
 -define(V1_VERS, 1).
 
--spec to_binary(antidote_crdt_index()) -> binary().
+-spec to_binary(antidote_crdt_index_s()) -> binary().
 to_binary(Index) ->
   <<?TAG:8/integer, ?V1_VERS:8/integer, (term_to_binary(Index))/binary>>.
 
--spec from_binary(binary()) -> {ok, antidote_crdt_index()}.
+-spec from_binary(binary()) -> {ok, antidote_crdt_index_s()}.
 from_binary(<<?TAG:8/integer, ?V1_VERS:8/integer, Bin/binary>>) ->
   {ok, binary_to_term(Bin)}.
 
