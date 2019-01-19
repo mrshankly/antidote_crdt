@@ -126,7 +126,7 @@ value({range, {LowerPred, UpperPred}}, {IndexTree, _Indirection}) ->
                    infinity ->
                      gb_trees:iterator(IndexTree);
                    _ ->
-                     gb_trees:iterator_from(lookup_lower_bound(LowerPred, IndexTree), IndexTree)
+                     iterator_from_predicate(LowerPred, IndexTree)
                  end,
       iterate_and_filter({UpperPred, [key]}, gb_trees:next(Iterator), []);
     false ->
@@ -475,20 +475,17 @@ distinct([]) ->
 distinct([X | Xs]) ->
   not lists:member(X, Xs) andalso distinct(Xs).
 
-lookup_lower_bound(LowerPred, Tree) ->
-  case gb_trees:size(Tree) of
-    0 -> nil;
-    _Else -> lookup_lower_bound(LowerPred, gb_trees:iterator(Tree), nil)
-  end.
+iterator_from_predicate(LowerPred, Tree) ->
+  iterator_from_lower_bound(LowerPred, gb_trees:iterator(Tree)).
 
-lookup_lower_bound(LowerPred, Iterator, Final) ->
+iterator_from_lower_bound(LowerPred, Iterator) ->
   case gb_trees:next(Iterator) of
     none ->
-      Final;
+      Iterator;
     {Key, _Value, Iter} ->
       case apply_pred(LowerPred, Key) of
-        true -> Final;
-        false -> lookup_lower_bound(LowerPred, Iter, Final)
+        true -> Iterator;
+        false -> iterator_from_lower_bound(LowerPred, Iter)
       end
   end.
 
