@@ -73,9 +73,8 @@
               antidote_crdt_index_s_op/0,
               antidote_crdt_index_s_query/0]).
 
--type antidote_crdt_index_s() :: {indexmap(), indirectionmap()}.
--type gb_tree_node() :: nil | {_, _, _, _}.
--type indexmap() :: {non_neg_integer(), gb_tree_node()}.
+-type antidote_crdt_index_s() :: {indextree(), indirectionmap()}.
+-type indextree() :: gb_trees:tree(Key::term(), Key::term()).
 -type indirectionmap() :: dict:dict(Key::term(), [{FieldName::atom(), FieldType::atom(), FieldState::term()}]).
 
 -type pred_type() :: greater | greatereq | lesser | lessereq | equality | notequality.
@@ -118,7 +117,8 @@ value({IndexTree, _Indirection}) ->
 value({range, {equality, Val}}, Index) ->
   value({get, Val}, Index);
 value({range, {notequality, _Val} = Pred}, {IndexTree, _Indirection}) ->
-  iterate_and_filter({Pred, [key]}, gb_trees:iterator(IndexTree), []);
+  Iterator = gb_trees:iterator(IndexTree),
+  iterate_and_filter({Pred, [key]}, gb_trees:next(Iterator), []);
 value({range, {LowerPred, UpperPred}}, {IndexTree, _Indirection}) ->
   case validate_pred(lower, LowerPred) andalso validate_pred(upper, UpperPred) of
     true ->
@@ -475,18 +475,21 @@ distinct([]) ->
 distinct([X | Xs]) ->
   not lists:member(X, Xs) andalso distinct(Xs).
 
-lookup_lower_bound(_LowerPred, {0, _Tree}) ->
-  nil;
-lookup_lower_bound(LowerPred, {Size, Tree}) when Size > 0 ->
-  lookup_lower_bound(LowerPred, Tree, nil).
-lookup_lower_bound(_LowerPred, nil, Final) ->
-  Final;
-lookup_lower_bound(LowerPred, {Key, _Value, Left, Right}, Final) ->
-  case apply_pred(LowerPred, Key) of
-    true ->
-      lookup_lower_bound(LowerPred, Left, Key);
-    false ->
-      lookup_lower_bound(LowerPred, Right, Final)
+lookup_lower_bound(LowerPred, Tree) ->
+  case gb_trees:size(Tree) of
+    0 -> nil;
+    _Else -> lookup_lower_bound(LowerPred, gb_trees:iterator(Tree), nil)
+  end.
+
+lookup_lower_bound(LowerPred, Iterator, Final) ->
+  case gb_trees:next(Iterator) of
+    none ->
+      Final;
+    {Key, _Value, Iter} ->
+      case apply_pred(LowerPred, Key) of
+        true -> Final;
+        false -> lookup_lower_bound(LowerPred, Iter, Final)
+      end
   end.
 
 iterate_and_filter(_Predicate, none, Acc) ->

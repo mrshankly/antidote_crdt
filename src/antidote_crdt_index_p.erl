@@ -74,10 +74,8 @@
               antidote_crdt_index_p_op/0,
               antidote_crdt_index_p_query/0]).
 
--type antidote_crdt_index_p() :: indexmap().
--type entry() :: map().
--type gb_tree_node() :: nil | {_, entry(), _, _}.
--type indexmap() :: {non_neg_integer(), gb_tree_node()}.
+-type antidote_crdt_index_p() :: indextree().
+-type indextree() :: gb_trees:tree(Key::term(), Key::term()).
 
 -type pred_type() :: greater | greatereq | lesser | lessereq | equality | notequality.
 -type pred_arg() :: number().
@@ -118,7 +116,8 @@ value(Index) ->
 value({range, {equality, Val}}, Index) ->
   value({get, Val}, Index);
 value({range, {notequality, _Val} = Pred}, Index) ->
-  iterate_and_filter({Pred, [key]}, gb_trees:iterator(Index), []);
+  Iterator = gb_trees:iterator(Index),
+  iterate_and_filter(Pred, gb_trees:next(Iterator), []);
 value({range, {LowerPred, UpperPred}}, Index) ->
   case validate_pred(lower, LowerPred) andalso validate_pred(upper, UpperPred) of
     true ->
@@ -128,7 +127,7 @@ value({range, {LowerPred, UpperPred}}, Index) ->
                    _ ->
                      gb_trees:iterator_from(lookup_lower_bound(LowerPred, Index), Index)
                  end,
-      iterate_and_filter({UpperPred, [key]}, gb_trees:next(Iterator), []);
+      iterate_and_filter(UpperPred, gb_trees:next(Iterator), []);
     false ->
       throw(lists:flatten(?WRONG_PRED({LowerPred, UpperPred})))
   end;
@@ -243,7 +242,7 @@ to_value(none, Acc) ->
   Acc.
 
 entry_value(Entry) ->
-  case is_bottom(Entry) of
+  case is_bottom(?BOBJ_DT, Entry) of
     true ->
       none;
     false ->
@@ -272,59 +271,21 @@ generate_downstream_remove(Key, Index) ->
   DownstreamEffect = generate_downstream_reset(ResetOp, ?BOBJ_DT, Entry),
   {Key, DownstreamEffect}.
 
-generate_downstream_reset(Op, StateDT, State) ->
-  case StateDT:is_operation(Op) of
-    true ->
-      {ok, DownS} = StateDT:downstream({reset, {}}, State),
-      DownS;
-    false ->
-      resolve_downstream(StateDT, State)
-  end.
-
-%% A simple solver for CRDTs which do not have a reset operation.
-resolve_downstream(antidote_crdt_register_lww = Type, State) ->
+%% TODO keep the 'Op' in case LWW-register starts to support reset operations
+generate_downstream_reset(_Op, Type, State) ->
   {ok, DS} = Type:downstream({assign, <<>>}, State),
-  DS;
-%% This function assumes there's only one actor updating the counter.
-resolve_downstream(antidote_crdt_counter_b = Type, State) ->
-  CounterV = calc_value(Type, Type:value(State)),
-  {ok, DS} = Type:downstream({decrement, {CounterV, term}}, State),
-  DS;
-resolve_downstream(antidote_crdt_counter_pn = Type, State) ->
-  CounterV = Type:value(State),
-  {ok, DS} = Type:downstream({decrement, CounterV}, State),
-  DS;
-resolve_downstream(_, _) ->
-  none.
+  DS.
 
 apply_update(Op, BObjCRDT) ->
   ?BOBJ_DT:update(Op, BObjCRDT).
 
-is_bottom(BoundObj) ->
-  is_bottom(?BOBJ_DT, BoundObj).
-
 is_bottom(Type, State) ->
-  Val1 = calc_value(Type, Type:value(State)),
-  Val2 = calc_value(Type, Type:value(Type:new())),
+  Val1 = Type:value(State),
+  Val2 = Type:value(Type:new()),
   (erlang:function_exported(Type, is_bottom, 1) andalso Type:is_bottom(State))
     orelse Val1 == Val2.
 
 is_operation0(Op) -> ?BOBJ_DT:is_operation(Op).
-
-%% A special case for a bounded counter, where the value of an index entry
-%% supported by this CRDT corresponds to the difference between the sum of
-%% increments and the sum of decrements.
-calc_value(?BCOUNTER_DT, {Inc, Dec}) ->
-  IncList = orddict:to_list(Inc),
-  DecList = orddict:to_list(Dec),
-  SumInc = sum_values(IncList),
-  SumDec = sum_values(DecList),
-  SumInc - SumDec;
-calc_value(_, Value) ->
-  Value.
-
-sum_values(List) when is_list(List) ->
-  lists:sum([Value || {_Ids, Value} <- List]).
 
 apply_ops([], Index) ->
   {ok, Index};
@@ -357,46 +318,38 @@ distinct([]) ->
 distinct([X | Xs]) ->
   not lists:member(X, Xs) andalso distinct(Xs).
 
-lookup_lower_bound(_LowerPred, {0, _Tree}) ->
-  nil;
-lookup_lower_bound(LowerPred, {Size, Tree}) when Size > 0 ->
-  lookup_lower_bound(LowerPred, Tree, nil).
-lookup_lower_bound(_LowerPred, nil, Final) ->
-  Final;
-lookup_lower_bound(LowerPred, {Key, _Value, Left, Right}, Final) ->
-  case apply_pred(LowerPred, Key) of
-    true ->
-      lookup_lower_bound(LowerPred, Left, Key);
-    false ->
-      lookup_lower_bound(LowerPred, Right, Final)
+lookup_lower_bound(LowerPred, Tree) ->
+  case gb_trees:size(Tree) of
+    0 -> nil;
+    _Else -> lookup_lower_bound(LowerPred, gb_trees:iterator(Tree), nil)
+  end.
+
+lookup_lower_bound(LowerPred, Iterator, Final) ->
+  case gb_trees:next(Iterator) of
+    none ->
+      Final;
+    {Key, _Value, Iter} ->
+      case apply_pred(LowerPred, Key) of
+        true -> Final;
+        false -> lookup_lower_bound(LowerPred, Iter, Final)
+      end
   end.
 
 iterate_and_filter(_Predicate, none, Acc) ->
   Acc;
-iterate_and_filter({infinity, _} = Predicate, {Key, Value, Iter}, Acc) ->
-  case entry_value(Value) of
-    none ->
-      iterate_and_filter(Predicate, gb_trees:next(Iter), Acc);
-    {ok, Val} ->
-      NewAcc = lists:append(Acc, [{Key, Val}]),
-      iterate_and_filter(Predicate, gb_trees:next(Iter), NewAcc)
-  end;
-iterate_and_filter({Bound, Params} = Predicate, {Key, Value, Iter}, Acc) ->
-  Result = case Params of
-             [key] ->
-               apply_pred(Bound, Key);
-             [value, V] ->
-               apply_pred(Bound, [Value, V])
-           end,
-  NewAcc = case Result of
+iterate_and_filter(Bound, {Key, Value, Iter}, Acc) ->
+  NewAcc = case apply_pred(Bound, Key) of
              true ->
                case entry_value(Value) of
-                 none -> Acc;
-                 {ok, Val} -> lists:append(Acc, [{Key, Val}])
+                 none ->
+                   Acc;
+                 {ok, Val} ->
+                   lists:append(Acc, [{Key, Val}])
                end;
-             false -> Acc
+             false ->
+               Acc
            end,
-  iterate_and_filter(Predicate, gb_trees:next(Iter), NewAcc).
+  iterate_and_filter(Bound, gb_trees:next(Iter), NewAcc).
 
 validate_pred(_BoundType, infinity) ->
   true;
