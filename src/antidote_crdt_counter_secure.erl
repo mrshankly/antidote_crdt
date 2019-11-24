@@ -50,9 +50,7 @@
 -type freshness() :: fresh | spoiled.
 -type state() :: {freshness(), integer(), integer()}.
 -type op() :: {increment, integer()}
-            | {increment, {integer(), integer()}}
-            | {decrement, integer()}
-            | {decrement, {integer(), integer()}}.
+            | {increment, {integer(), integer()}}.
 -type effect() :: integer() | {integer(), integer()}.
 
 %% @doc Create a new, 0 initialized secure pncounter.
@@ -69,11 +67,7 @@ value({_, Value, _}) when is_integer(Value) ->
 downstream({increment, {Delta, NSquare}}, _SecurePNCounter) when is_integer(Delta) and is_integer(Delta) ->
     {ok, {Delta, NSquare}};
 downstream({increment, Delta}, _SecurePNCounter) when is_integer(Delta) ->
-    {ok, Delta};
-downstream({decrement, {Delta, NSquare}}, _SecurePNCounter) when is_integer(Delta) and is_integer(Delta) ->
-    {ok, {-Delta, NSquare}};
-downstream({decrement, Delta}, _SecurePNCounter) when is_integer(Delta) ->
-    {ok, -Delta}.
+    {ok, Delta}.
 
 %% @doc Updates the given secure counter state with the given
 %% increment `Delta`. `NSquare` may also be provided, if it isn't,
@@ -97,6 +91,7 @@ equal(SecurePNCounter1, SecurePNCounter2) ->
 to_binary(SecurePNCounter) ->
     term_to_binary(SecurePNCounter).
 
+-spec from_binary(binary()) -> {ok, state()}.
 from_binary(Bin) ->
     {ok, binary_to_term(Bin)}.
 
@@ -105,8 +100,6 @@ from_binary(Bin) ->
 -spec is_operation(term()) -> boolean().
 is_operation({increment, {Delta, NSquare}}) when is_integer(Delta) and is_integer(NSquare) -> true;
 is_operation({increment, Delta}) when is_integer(Delta) -> true;
-is_operation({decrement, {Delta, NSquare}}) when is_integer(Delta) and is_integer(NSquare) -> true;
-is_operation({decrement, Delta}) when is_integer(Delta) -> true;
 is_operation(_) -> false.
 
 %% @doc Returns true if ?MODULE:downstream/2 needs the state of crdt
