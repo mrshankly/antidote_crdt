@@ -60,6 +60,7 @@ antidote_crdt_counter_pn
 | antidote_crdt_counter_b
 | antidote_crdt_counter_fat
 | antidote_crdt_counter_secure
+| antidote_crdt_counter_b_secure
 | antidote_crdt_flag_ew
 | antidote_crdt_flag_dw
 | antidote_crdt_set_go
@@ -89,20 +90,21 @@ antidote_crdt_counter_pn
 
 % Check if the given type is supported by Antidote
 -spec is_type(typ()) -> boolean().
-is_type(antidote_crdt_counter_pn)     -> true;
-is_type(antidote_crdt_counter_b)      -> true;
-is_type(antidote_crdt_counter_fat)    -> true;
-is_type(antidote_crdt_counter_secure) -> true;
-is_type(antidote_crdt_flag_ew)        -> true;
-is_type(antidote_crdt_flag_dw)        -> true;
-is_type(antidote_crdt_set_go)         -> true;
-is_type(antidote_crdt_set_aw)         -> true;
-is_type(antidote_crdt_set_rw)         -> true;
-is_type(antidote_crdt_register_lww)   -> true;
-is_type(antidote_crdt_register_mv)    -> true;
-is_type(antidote_crdt_map_go)         -> true;
-is_type(antidote_crdt_map_rr)         -> true;
-is_type(_)                            -> false.
+is_type(antidote_crdt_counter_pn)       -> true;
+is_type(antidote_crdt_counter_b)        -> true;
+is_type(antidote_crdt_counter_fat)      -> true;
+is_type(antidote_crdt_counter_secure)   -> true;
+is_type(antidote_crdt_counter_b_secure) -> true;
+is_type(antidote_crdt_flag_ew)          -> true;
+is_type(antidote_crdt_flag_dw)          -> true;
+is_type(antidote_crdt_set_go)           -> true;
+is_type(antidote_crdt_set_aw)           -> true;
+is_type(antidote_crdt_set_rw)           -> true;
+is_type(antidote_crdt_register_lww)     -> true;
+is_type(antidote_crdt_register_mv)      -> true;
+is_type(antidote_crdt_map_go)           -> true;
+is_type(antidote_crdt_map_rr)           -> true;
+is_type(_)                              -> false.
 
 
 % Returns the initial CRDT state for the given Type

@@ -54,6 +54,7 @@
 -type effect() :: integer() | {integer(), integer()}.
 
 %% @doc Create a new, 0 initialized secure pncounter.
+-spec new() -> state().
 new() ->
     {fresh, 0, 0}.
 
