@@ -210,17 +210,17 @@ from_binary(<<Bin/binary>>) ->
 -spec is_operation(term()) -> boolean().
 is_operation(Operation) ->
     case Operation of
-        {increment, {Number, NSquare, _Actor}} ->
+        {increment, {Number, NSquare}} ->
             is_integer(Number) and is_integer(NSquare);
-        {increment, {Number, _Actor}} ->
+        {increment, Number} ->
             is_integer(Number);
 
-        {decrement, {Number, NSquare, _Actor}} ->
+        {decrement, {Number, NSquare}} ->
             is_integer(Number) and is_integer(NSquare);
-        {decrement, {Number, _Actor}} ->
+        {decrement, Number} ->
             is_integer(Number);
 
-        {transfer, {Number, _, _Actor}} ->
+        {transfer, {Number, _From, _To}} ->
             is_integer(Number);
 
         _ ->
