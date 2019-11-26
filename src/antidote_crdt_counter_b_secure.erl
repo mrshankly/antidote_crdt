@@ -182,7 +182,8 @@ update({{decrement, V, NSquare}, Id}, {P, D, _}) ->
     {ok, {P, update_permissions(Id, V, NSquare, D), NSquare}};
 update({{decrement, V}, Id}, {P, D, NSquare}) ->
     {ok, {P, update_permissions(Id, V, NSquare, D), NSquare}};
-update({{transfer, V, To}, From}, {P, D, NSquare} = SecureBCounter) ->
+update({{transfer, _V, _To}, _From}, {_P, _D, _NSquare} = SecureBCounter) ->
+    % TODO
     {ok, SecureBCounter}.
 
 %% Add a given amount of permissions to a replica.
