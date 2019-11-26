@@ -135,7 +135,7 @@ permissions({P, D}) ->
 
 %% @doc Return the read value of a given `antidote_crdt_counter_b()', itself.
 -spec value(antidote_crdt_counter_b()) -> antidote_crdt_counter_b().
-value(Counter) -> Counter.
+value(Counter) -> permissions(Counter).
 
 %% @doc Generate a downstream operation.
 %% The first parameter is either `{increment, pos_integer()}' or `{decrement, pos_integer()}',
@@ -199,9 +199,9 @@ from_binary(<<B/binary>>) -> {ok, binary_to_term(B)}.
 -spec is_operation(term()) -> boolean().
 is_operation(Operation) ->
     case Operation of
-        {decrement, {Number, _Actor}} ->
+        {decrement, Number} ->
             is_integer(Number) andalso (Number >= 0);
-        {increment, {Number, _Actor}} ->
+        {increment, Number} ->
             is_integer(Number) andalso (Number >= 0);
         {transfer, {Number, _, _Actor}} ->
             is_integer(Number) andalso (Number >= 0);
