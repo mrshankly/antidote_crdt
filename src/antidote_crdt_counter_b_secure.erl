@@ -125,7 +125,7 @@ localPermissions(Id, {P, D, NSquare}) ->
     end.
 
 %% @doc Return the total available permissions in a `antidote_crdt_counter_b()'.
--spec permissions(antidote_crdt_counter_b_secure()) -> non_neg_integer().
+-spec permissions(antidote_crdt_counter_b_secure()) -> {non_neg_integer() | nil, non_neg_integer() | nil}.
 permissions({P, D, NSquare}) ->
     Increments = lists:filtermap(
         fun
@@ -188,7 +188,7 @@ update({{transfer, _V, _To}, _From}, {_P, _D, _NSquare} = SecureBCounter) ->
 
 %% Add a given amount of permissions to a replica.
 update_permissions(Key, Delta, NSquare, Dict) ->
-    case orddict:find(Key, Dict, NSquare) of
+    case orddict:find(Key, Dict) of
         {ok, Value} ->
             orddict:store(Key, (Value * Delta) rem NSquare, Dict);
         error ->
