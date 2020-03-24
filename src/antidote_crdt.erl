@@ -45,7 +45,8 @@
 %% map_aw: Add Wins Map aka AW-Map (Experimental)
 %% map_rr: Recursive Resets Map aka RR-Map
 %% rga: Replicated Growable Array (Experimental)
-
+%% index_p: AQL's Primary index
+%% index_s: AQL's Secondary index
 
 
 -module(antidote_crdt).
@@ -69,7 +70,9 @@ antidote_crdt_counter_pn
 | antidote_crdt_register_lww
 | antidote_crdt_register_mv
 | antidote_crdt_map_go
-| antidote_crdt_map_rr.
+| antidote_crdt_map_rr
+| antidote_crdt_index_p
+| antidote_crdt_index_s.
 
 -type internal_crdt() :: term().
 -type internal_effect() :: term().
@@ -104,8 +107,9 @@ is_type(antidote_crdt_register_lww)     -> true;
 is_type(antidote_crdt_register_mv)      -> true;
 is_type(antidote_crdt_map_go)           -> true;
 is_type(antidote_crdt_map_rr)           -> true;
+is_type(antidote_crdt_index_p)          -> true;
+is_type(antidote_crdt_index_s)          -> true;
 is_type(_)                              -> false.
-
 
 % Returns the initial CRDT state for the given Type
 -spec new(typ()) -> crdt().

@@ -5,3 +5,5 @@ TEST-*.xml
 src/*.swp
 test/*.swp
 *.beam
+*.iml
+.idea
