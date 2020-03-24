@@ -71,8 +71,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--export_type([antidote_crdt_set_aw/0, binary_antidote_crdt_set_aw/0, antidote_crdt_set_aw_op/0]).
--opaque antidote_crdt_set_aw() :: orddict:orddict(member(), tokens()).
+-type antidote_crdt_set_aw() :: orddict:orddict(member(), tokens()).
 
 -type binary_antidote_crdt_set_aw() :: binary(). %% A binary that from_binary/1 will operate on.
 
@@ -177,7 +176,7 @@ create_downstreams(CreateDownstream, [Elem1|ElemsRest]=Elems, [{Elem2, Tokens}|S
         Elem1 > Elem2 ->
             create_downstreams(CreateDownstream, Elems, Set_awRest, DownstreamOps);
         true ->
-            DownstreamOp = CreateDownstream(Elem1, Tokens),
+            DownstreamOp = CreateDownstream(Elem1, []),
             create_downstreams(CreateDownstream, ElemsRest, Set_aw, [DownstreamOp|DownstreamOps])
     end.
 
