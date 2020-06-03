@@ -102,18 +102,29 @@ is_type(antidote_crdt_map_go)       -> true;
 is_type(antidote_crdt_map_rr)       -> true;
 is_type(_)                          -> false.
 
+% Makes it possible to map multiple CRDT types to one CRDT implementation
+-spec alias(typ()) -> typ().
+alias(antidote_secure_crdt_set_go)       -> antidote_crdt_set_aw;
+alias(antidote_secure_crdt_set_rw)       -> antidote_crdt_set_rw;
+alias(antidote_secure_crdt_register_lww) -> antidote_crdt_register_lww;
+alias(antidote_secure_crdt_register_mv)  -> antidote_crdt_register_mv;
+alias(antidote_secure_crdt_map_go)       -> antidote_crdt_map_aw;
+alias(antidote_secure_crdt_map_rr)       -> antidote_crdt_map_rr;
+alias(Type) -> Type.
 
 % Returns the initial CRDT state for the given Type
 -spec new(typ()) -> crdt().
 new(Type) ->
-    true = is_type(Type),
-    Type:new().
+    T = alias(Type),
+    true = is_type(T),
+    T:new().
 
 % Reads the value from a CRDT state
 -spec value(typ(), crdt()) -> any().
 value(Type, State) ->
-    true = is_type(Type),
-    Type:value(State).
+    T = alias(Type),
+    true = is_type(T),
+    T:value(State).
 
 % Computes the downstream effect for a given update operation and current state.
 % This has to be called once at the source replica.
@@ -122,9 +133,10 @@ value(Type, State) ->
 % and the atom 'ignore' can be passed instead (see function require_state_downstream).
 -spec downstream(typ(), update(), crdt() | ignore) -> {ok, effect()} | {error, reason()}.
 downstream(Type, Update, State) ->
-    true = is_type(Type),
-    true = Type:is_operation(Update),
-    Type:downstream(Update, State).
+    T = alias(Type),
+    true = is_type(T),
+    true = T:is_operation(Update),
+    T:downstream(Update, State).
 
 % Updates the state of a CRDT by applying a downstream effect calculated
 % using the downstream function.
@@ -133,21 +145,24 @@ downstream(Type, Update, State) ->
 % then Eff1 has to be applied before Eff2 on all replicas.
 -spec update(typ(), effect(), crdt()) -> {ok, crdt()}.
 update(Type, Effect, State) ->
-    true = is_type(Type),
-    Type:update(Effect, State).
+    T = alias(Type),
+    true = is_type(T),
+    T:update(Effect, State).
 
 % Checks whether the current state is required by the downstream function
 % for a specific type and update operation
 -spec require_state_downstream(typ(), update()) -> boolean().
 require_state_downstream(Type, Update) ->
-    true = is_type(Type),
-    Type:require_state_downstream(Update).
+    T = alias(Type),
+    true = is_type(T),
+    T:require_state_downstream(Update).
 
 % Checks whether the given update operation is valid for the given type
 -spec is_operation(typ(), update()) -> boolean().
 is_operation(Type, Update) ->
-    true = is_type(Type),
-    Type:is_operation(Update).
+    T = alias(Type),
+    true = is_type(T),
+    T:is_operation(Update).
 
 -spec to_binary(crdt()) -> binary().
 to_binary(Term) ->
