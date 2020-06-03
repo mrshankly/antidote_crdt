@@ -104,11 +104,11 @@ is_type(_)                          -> false.
 
 % Makes it possible to map multiple CRDT types to one CRDT implementation
 -spec alias(typ()) -> typ().
-alias(antidote_secure_crdt_set_go)       -> antidote_crdt_set_aw;
+alias(antidote_secure_crdt_set_aw)       -> antidote_crdt_set_aw;
 alias(antidote_secure_crdt_set_rw)       -> antidote_crdt_set_rw;
 alias(antidote_secure_crdt_register_lww) -> antidote_crdt_register_lww;
 alias(antidote_secure_crdt_register_mv)  -> antidote_crdt_register_mv;
-alias(antidote_secure_crdt_map_go)       -> antidote_crdt_map_aw;
+alias(antidote_secure_crdt_map_aw)       -> antidote_crdt_map_aw;
 alias(antidote_secure_crdt_map_rr)       -> antidote_crdt_map_rr;
 alias(Type) -> Type.
 
