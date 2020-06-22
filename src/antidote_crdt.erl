@@ -88,19 +88,25 @@ antidote_crdt_counter_pn
 
 % Check if the given type is supported by Antidote
 -spec is_type(typ()) -> boolean().
-is_type(antidote_crdt_counter_pn)   -> true;
-is_type(antidote_crdt_counter_b)    -> true;
-is_type(antidote_crdt_counter_fat)  -> true;
-is_type(antidote_crdt_flag_ew)      -> true;
-is_type(antidote_crdt_flag_dw)      -> true;
-is_type(antidote_crdt_set_go)       -> true;
-is_type(antidote_crdt_set_aw)       -> true;
-is_type(antidote_crdt_set_rw)       -> true;
-is_type(antidote_crdt_register_lww) -> true;
-is_type(antidote_crdt_register_mv)  -> true;
-is_type(antidote_crdt_map_go)       -> true;
-is_type(antidote_crdt_map_rr)       -> true;
-is_type(_)                          -> false.
+is_type(antidote_crdt_counter_pn)          -> true;
+is_type(antidote_crdt_counter_b)           -> true;
+is_type(antidote_crdt_counter_fat)         -> true;
+is_type(antidote_crdt_flag_ew)             -> true;
+is_type(antidote_crdt_flag_dw)             -> true;
+is_type(antidote_crdt_set_go)              -> true;
+is_type(antidote_crdt_set_aw)              -> true;
+is_type(antidote_crdt_set_rw)              -> true;
+is_type(antidote_crdt_register_lww)        -> true;
+is_type(antidote_crdt_register_mv)         -> true;
+is_type(antidote_crdt_map_go)              -> true;
+is_type(antidote_crdt_map_rr)              -> true;
+is_type(antidote_secure_crdt_set_aw)       -> true;
+is_type(antidote_secure_crdt_set_rw)       -> true;
+is_type(antidote_secure_crdt_register_lww) -> true;
+is_type(antidote_secure_crdt_register_mv)  -> true;
+is_type(antidote_secure_crdt_map_go)       -> true;
+is_type(antidote_secure_crdt_map_rr)       -> true;
+is_type(_)                                 -> false.
 
 % Makes it possible to map multiple CRDT types to one CRDT implementation
 -spec alias(typ()) -> typ().
