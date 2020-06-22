@@ -22,7 +22,9 @@ For a more detailed description of the different data types, the [Antidote Docum
     | antidote_crdt_register_lww    % Last Writer Wins Register aka LWW-Reg
     | antidote_crdt_register_mv     % MultiValue Register aka MV-Reg
     | antidote_crdt_map_go          % Grow Only Map aka G-Map
-    | antidote_crdt_map_rr.         % Recursive Resets Map aka RR-Map
+    | antidote_crdt_map_rr          % Recursive Resets Map aka RR-Map
+    | antidote_crdt_index_p         % AQL's Primary Index
+    | antidote_crdt_index_s.        % AQL's Secondary Index
 
 % The State of a CRDT:
 -type crdt() :: ...

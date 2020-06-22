@@ -45,7 +45,8 @@
 %% map_aw: Add Wins Map aka AW-Map (Experimental)
 %% map_rr: Recursive Resets Map aka RR-Map
 %% rga: Replicated Growable Array (Experimental)
-
+%% index_p: AQL's Primary index
+%% index_s: AQL's Secondary index
 
 
 -module(antidote_crdt).
@@ -59,6 +60,8 @@
 antidote_crdt_counter_pn
 | antidote_crdt_counter_b
 | antidote_crdt_counter_fat
+| antidote_crdt_counter_secure
+| antidote_crdt_counter_b_secure
 | antidote_crdt_flag_ew
 | antidote_crdt_flag_dw
 | antidote_crdt_set_go
@@ -67,7 +70,9 @@ antidote_crdt_counter_pn
 | antidote_crdt_register_lww
 | antidote_crdt_register_mv
 | antidote_crdt_map_go
-| antidote_crdt_map_rr.
+| antidote_crdt_map_rr
+| antidote_crdt_index_p
+| antidote_crdt_index_s.
 
 -type internal_crdt() :: term().
 -type internal_effect() :: term().
@@ -91,6 +96,8 @@ antidote_crdt_counter_pn
 is_type(antidote_crdt_counter_pn)          -> true;
 is_type(antidote_crdt_counter_b)           -> true;
 is_type(antidote_crdt_counter_fat)         -> true;
+is_type(antidote_crdt_counter_secure)      -> true;
+is_type(antidote_crdt_counter_b_secure)    -> true;
 is_type(antidote_crdt_flag_ew)             -> true;
 is_type(antidote_crdt_flag_dw)             -> true;
 is_type(antidote_crdt_set_go)              -> true;
